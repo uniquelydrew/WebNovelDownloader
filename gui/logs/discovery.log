@@ -1,0 +1,29 @@
+{"ts": "2026-03-02T04:03:29.416429Z", "stage": "discovery", "event": "browser_launch", "meta": {"url": "https://www.wuxiaworld.com/novel/nine-star-hegemon"}}
+{"ts": "2026-03-02T04:06:04.783114Z", "stage": "discovery", "event": "browser_launch", "meta": {"url": "https://www.wuxiaworld.com/novel/nine-star-hegemon"}}
+{"ts": "2026-03-02T04:24:36.642438Z", "stage": "discovery", "event": "browser_launch", "meta": {"url": "https://www.wuxiaworld.com/novel/nine-star-hegemon"}}
+{"ts": "2026-03-02T04:38:11.832854Z", "stage": "discovery", "event": "browser_launch", "meta": {"url": "https://www.wuxiaworld.com/novel/nine-star-hegemon"}}
+{"ts": "2026-03-02T04:41:25.802303Z", "stage": "discovery", "event": "browser_launch", "meta": {"url": "https://www.wuxiaworld.com/novel/nine-star-hegemon"}}
+{"ts": "2026-03-02T04:42:38.559899Z", "stage": "discovery", "event": "browser_launch", "meta": {"url": "https://www.wuxiaworld.com/novel/nine-star-hegemon"}}
+{"ts": "2026-03-02T04:42:41.373618Z", "stage": "discovery", "event": "page_loaded", "meta": {}}
+{"ts": "2026-03-02T04:47:23.516683Z", "stage": "discovery", "event": "cdp_connect_attempt", "meta": {"url": "https://www.wuxiaworld.com/novel/nine-star-hegemon"}}
+{"ts": "2026-03-02T04:53:06.390594Z", "stage": "discovery", "event": "cdp_connect_attempt", "meta": {"url": "https://www.wuxiaworld.com/novel/nine-star-hegemon"}}
+{"ts": "2026-03-02T04:53:33.550672Z", "stage": "discovery", "event": "cdp_connect_attempt", "meta": {"url": "https://www.wuxiaworld.com/novel/nine-star-hegemon"}}
+{"ts": "2026-03-02T04:55:31.673825Z", "stage": "discovery", "event": "cdp_connect_attempt", "meta": {"url": "https://www.wuxiaworld.com/novel/nine-star-hegemon"}}
+{"ts": "2026-03-02T17:00:16.028022Z", "stage": "discovery", "event": "cdp_connect_attempt", "meta": {"url": "https://www.wuxiaworld.com/novel/nine-star-hegemon"}}
+{"ts": "2026-03-02T17:03:03.845709Z", "stage": "discovery", "event": "cdp_connect_attempt", "meta": {"url": "https://www.wuxiaworld.com/novel/nine-star-hegemon"}}
+{"ts": "2026-03-02T17:03:05.424270Z", "stage": "discovery", "event": "page_loaded", "meta": {}}
+{"ts": "2026-03-02T17:03:15.513358Z", "stage": "discovery", "event": "accordion_detected", "meta": {}}
+{"ts": "2026-03-02T17:03:15.528330Z", "stage": "discovery", "event": "volumes_expanded", "meta": {"count": 0}}
+{"ts": "2026-03-02T17:03:17.047416Z", "stage": "discovery", "event": "dom_captured", "meta": {"size": 198578}}
+{"ts": "2026-03-02T17:03:26.486655Z", "stage": "discovery", "event": "cdp_connect_attempt", "meta": {"url": "https://www.wuxiaworld.com/novel/nine-star-hegemon"}}
+{"ts": "2026-03-02T17:03:27.588377Z", "stage": "discovery", "event": "page_loaded", "meta": {}}
+{"ts": "2026-03-02T17:03:28.442292Z", "stage": "discovery", "event": "accordion_detected", "meta": {}}
+{"ts": "2026-03-02T17:03:28.468569Z", "stage": "discovery", "event": "volumes_expanded", "meta": {"count": 0}}
+{"ts": "2026-03-02T17:03:29.994393Z", "stage": "discovery", "event": "dom_captured", "meta": {"size": 304848}}
+{"ts": "2026-03-02T17:03:46.188790Z", "stage": "discovery", "event": "cdp_connect_attempt", "meta": {"url": "https://www.wuxiaworld.com/novel/nine-star-hegemon"}}
+{"ts": "2026-03-02T17:03:47.268493Z", "stage": "discovery", "event": "page_loaded", "meta": {}}
+{"ts": "2026-03-02T17:03:48.125172Z", "stage": "discovery", "event": "accordion_detected", "meta": {}}
+{"ts": "2026-03-02T17:03:48.145697Z", "stage": "discovery", "event": "volumes_expanded", "meta": {"count": 0}}
+{"ts": "2026-03-02T17:03:49.671987Z", "stage": "discovery", "event": "dom_captured", "meta": {"size": 303237}}
+{"ts": "2026-03-02T17:11:00.879154Z", "stage": "discovery", "event": "cdp_connect_attempt", "meta": {"url": "https://www.wuxiaworld.com/novel/nine-star-hegemon"}}
+{"ts": "2026-03-02T17:12:44.786845Z", "stage": "discovery", "event": "cdp_connect_attempt", "meta": {"url": "https://www.wuxiaworld.com/novel/nine-star-hegemon"}}

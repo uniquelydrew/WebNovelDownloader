@@ -1,0 +1,7 @@
+PySide6==6.6.1
+scrapy==2.11.1
+twisted==23.10.0
+reportlab==4.0.8
+requests==2.32.3
+lxml==5.2.2
+playwright==1.43.0
