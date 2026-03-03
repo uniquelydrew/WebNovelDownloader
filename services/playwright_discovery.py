@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import time
+import hashlib
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -25,7 +26,22 @@ class PlaywrightDiscoveryService:
         self.snapshot_dir = self.log_root / "payload_snapshots"
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
 
+        self.cache_root = self.project_root / "cache"
+        self.cache_root.mkdir(parents=True, exist_ok=True)
+        self.cache_ttl_seconds = int(
+            os.getenv("WNS_TRAVERSAL_CACHE_TTL", 60 * 60 * 24)
+        )
+
     def load(self, url: str) -> dict:
+        key = hashlib.sha256(url.encode("utf-8")).hexdigest()
+        cache_path = self.cache_root / f"{key}.json"
+
+        if os.getenv("WNS_TRAVERSAL_CACHE_DISABLE") != "1":
+            if cache_path.exists():
+                age = time.time() - cache_path.stat().st_mtime
+                if age < self.cache_ttl_seconds:
+                    return json.loads(cache_path.read_text(encoding="utf-8"))
+
         run_dir = self._make_run_dir()
         console_path = run_dir / "console.jsonl"
 

@@ -28,6 +28,9 @@ class SelectedSpider(scrapy.Spider):
         "ITEM_PIPELINES": {"pipelines.filesystem.FilesystemPipeline": 300},
         # Keep logs quieter; GUI uses structured events from stdout
         "LOG_LEVEL": "INFO",
+        "DOWNLOADER_MIDDLEWARES": {
+            "auth.middleware.StorageStateCookieMiddleware": 543,
+        },
     }
 
     def __init__(self, selection_path: str, out_dir: str, export_format: str, *args, **kwargs):
@@ -61,6 +64,19 @@ class SelectedSpider(scrapy.Spider):
 
     def parse_chapter(self, response: Response):
         meta = response.meta
+        # Hard unauthorized fast-fail
+        preview_markers = [
+            "Log in to continue your adventure",
+            "Unlock free chapters every day",
+            "Other benefits you will get",
+        ]
+
+        for marker in preview_markers:
+            if marker in response.text:
+                raise RuntimeError(
+                    f"Unauthorized preview page detected: {response.url}"
+                )
+
         container = find_content_container(response)
         if not container:
             # Still emit progress so GUI doesn't look frozen
@@ -69,7 +85,25 @@ class SelectedSpider(scrapy.Spider):
             return None
 
         raw = extract_text(container)
+
+        # Aggressively remove blockquotes
+        from lxml import html
+
+        doc = html.fromstring(response.text)
+        for node in doc.xpath("//blockquote"):
+            parent = node.getparent()
+            if parent is not None:
+                parent.remove(node)
+
+        cleaned_html = html.tostring(doc, encoding="unicode")
+
         clean = self.cleaner.clean(raw)
+
+        # Minimum length guard
+        if len(clean.strip()) < 500:
+            raise RuntimeError(
+                f"Chapter content too short (possible preview): {response.url}"
+            )
 
         ch = Chapter(
             novel_title=self.series_title,
