@@ -7,8 +7,6 @@ from PySide6.QtWidgets import (
     QTreeWidgetItem, QTextEdit
 )
 
-from parsing.html_doc import HtmlDoc
-from parsing.wuxiaworld_file_parser import WuxiaworldFileParser
 from services.discovery_process import DiscoveryProcess
 from services.subprocess_worker import SubprocessCrawlWorker
 
@@ -19,7 +17,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("WebNovelScraper")
         self.resize(820, 640)
 
-        self.series = None
+        self.series_payload: dict | None = None
         self.discovery_proc: DiscoveryProcess | None = None
         self.discovery_timer: QTimer | None = None
 
@@ -94,7 +92,9 @@ class MainWindow(QMainWindow):
         self.export_btn.setEnabled(False)
         self.tree.clear()
         self.progress.setValue(0)
-        self._append_log(f"Starting discovery (browser auth + capture): {url}")
+        self.series_payload = None
+
+        self._append_log(f"Starting discovery: {url}")
 
         self.discovery_proc = DiscoveryProcess(url)
         self.discovery_proc.start()
@@ -113,53 +113,70 @@ class MainWindow(QMainWindow):
             self.load_btn.setEnabled(True)
 
             if not result.get("ok"):
-                QMessageBox.critical(self, "Error", result.get("error", "Unknown error"))
-                self._append_log(f"Discovery failed: {result.get('error')}")
+                err = result.get("error", "Unknown error")
+                self._append_log(f"Discovery failed: {err}")
+                QMessageBox.critical(self, "Error", err)
                 return
 
-            html = result.get("html", "")
-            self._append_log(f"Discovery complete. Rendered HTML size: {len(html)} bytes")
+            payload = result.get("payload")
+            if not payload or not isinstance(payload, dict):
+                self._append_log("Discovery returned no payload.")
+                QMessageBox.critical(self, "Error", "Discovery returned no payload.")
+                return
 
-            doc = HtmlDoc.from_html(html, url=self.url_input.text().strip())
-            parser = WuxiaworldFileParser()
-            self.series = parser.parse(doc)
+            self.series_payload = payload
 
-            self._populate_tree()
+            title = payload.get("series_title") or "Unknown Series"
+            vcount = len(payload.get("volumes", []) or [])
+            ccount = sum(len(v.get("chapters", []) or []) for v in (payload.get("volumes", []) or []))
+
+            self._append_log(f"Discovery complete: {title} | volumes={vcount} | chapters={ccount}")
+
+            self._populate_tree_from_payload(payload)
             self._update_export_enabled()
 
-    def _populate_tree(self):
+    def _populate_tree_from_payload(self, payload: dict):
         self.tree.blockSignals(True)
         self.tree.clear()
 
-        if not self.series:
-            self.tree.blockSignals(False)
-            return
+        series_title = payload.get("series_title") or "Unknown Series"
 
-        root = QTreeWidgetItem([self.series.title])
+        root = QTreeWidgetItem([series_title])
         root.setFlags(root.flags() | Qt.ItemIsUserCheckable)
         root.setCheckState(0, Qt.Unchecked)
         root.setData(0, Qt.UserRole, {"type": "series"})
         self.tree.addTopLevelItem(root)
 
-        for vol in self.series.volumes:
-            vitem = QTreeWidgetItem([vol.title])
+        volumes = payload.get("volumes", []) or []
+        for vi, vol in enumerate(volumes, start=1):
+            vtitle = (vol.get("title") or f"Volume {vi}").strip()
+
+            vitem = QTreeWidgetItem([vtitle])
             vitem.setFlags(vitem.flags() | Qt.ItemIsUserCheckable)
             vitem.setCheckState(0, Qt.Unchecked)
-            vitem.setData(0, Qt.UserRole, {"type": "volume", "volume_index": vol.index, "volume_title": vol.title})
+            vitem.setData(0, Qt.UserRole, {"type": "volume", "volume_index": vi, "volume_title": vtitle})
             root.addChild(vitem)
 
-            for cref in vol.chapters:
-                citem = QTreeWidgetItem([cref.title])
+            chapters = vol.get("chapters", []) or []
+            for ci, ch in enumerate(chapters, start=1):
+                ctitle = (ch.get("title") or f"Chapter {ci}").strip()
+                curl = (ch.get("url") or "").strip()
+
+                citem = QTreeWidgetItem([ctitle])
                 citem.setFlags(citem.flags() | Qt.ItemIsUserCheckable)
                 citem.setCheckState(0, Qt.Unchecked)
-                citem.setData(0, Qt.UserRole, {
-                    "type": "chapter",
-                    "volume_index": vol.index,
-                    "volume_title": vol.title,
-                    "chapter_index": cref.index,
-                    "chapter_title": cref.title,
-                    "url": cref.url,
-                })
+                citem.setData(
+                    0,
+                    Qt.UserRole,
+                    {
+                        "type": "chapter",
+                        "volume_index": vi,
+                        "volume_title": vtitle,
+                        "chapter_index": ci,
+                        "chapter_title": ctitle,
+                        "url": curl,
+                    },
+                )
                 vitem.addChild(citem)
 
         root.setExpanded(True)
@@ -174,8 +191,9 @@ class MainWindow(QMainWindow):
 
     def _collect_selection(self):
         chapters = []
+
         if self.tree.topLevelItemCount() == 0:
-            return {"chapters": [], "total_chapters": 0, "series_title": self.series.title if self.series else "Unknown"}
+            return {"series_title": None, "chapters": [], "total_chapters": 0}
 
         root = self.tree.topLevelItem(0)
 
@@ -187,16 +205,14 @@ class MainWindow(QMainWindow):
                 walk(node.child(i))
 
         walk(root)
-        return {
-            "series_title": self.series.title if self.series else "Unknown",
-            "chapters": chapters,
-            "total_chapters": len(chapters),
-        }
+
+        series_title = root.text(0)
+        return {"series_title": series_title, "chapters": chapters, "total_chapters": len(chapters)}
 
     def _update_export_enabled(self):
         has_dir = bool(self.dir_input.text().strip())
         payload = self._collect_selection()
-        self.export_btn.setEnabled(bool(self.series) and has_dir and payload.get("total_chapters", 0) > 0)
+        self.export_btn.setEnabled(bool(self.series_payload) and has_dir and payload.get("total_chapters", 0) > 0)
 
     def _export_selected(self):
         out_dir = self.dir_input.text().strip()
@@ -204,19 +220,28 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Error", "Please select an export directory.")
             return
 
-        payload = self._collect_selection()
-        if payload["total_chapters"] == 0:
+        selection = self._collect_selection()
+        if selection["total_chapters"] == 0:
             QMessageBox.warning(self, "Error", "No chapters selected.")
             return
 
         fmt = self.format_select.currentText().strip()
-        self._append_log(f"Export starting: {payload['total_chapters']} chapter(s), format={fmt}, out={out_dir}")
 
-        self.progress.setRange(0, payload["total_chapters"])
+        self._append_log(
+            f"Export starting: {selection['total_chapters']} chapter(s), format={fmt}, out={out_dir}"
+        )
+
+        self.progress.setRange(0, selection["total_chapters"])
         self.progress.setValue(0)
 
         self.export_btn.setEnabled(False)
         self.load_btn.setEnabled(False)
+
+        payload = {
+            "series_title": selection["series_title"],
+            "chapters": selection["chapters"],
+            "total_chapters": selection["total_chapters"],
+        }
 
         self.worker = SubprocessCrawlWorker(payload, out_dir, fmt)
         self.worker.progress.connect(self._on_progress)

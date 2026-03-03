@@ -27,3 +27,10 @@
 {"ts": "2026-03-02T17:03:49.671987Z", "stage": "discovery", "event": "dom_captured", "meta": {"size": 303237}}
 {"ts": "2026-03-02T17:11:00.879154Z", "stage": "discovery", "event": "cdp_connect_attempt", "meta": {"url": "https://www.wuxiaworld.com/novel/nine-star-hegemon"}}
 {"ts": "2026-03-02T17:12:44.786845Z", "stage": "discovery", "event": "cdp_connect_attempt", "meta": {"url": "https://www.wuxiaworld.com/novel/nine-star-hegemon"}}
+{"ts": "2026-03-03T01:09:12.836545Z", "stage": "discovery", "event": "cdp_connect_attempt", "meta": {"url": "https://www.wuxiaworld.com/novel/nine-star-hegemon"}}
+{"ts": "2026-03-03T01:14:33.609071Z", "stage": "discovery", "event": "payload_complete", "meta": {"debug_run_dir": "logs\\debug_runs\\20260302_200912_70540", "volumes": 0, "chapters": 0}}
+{"ts": "2026-03-03T01:27:27.453155Z", "stage": "discovery", "event": "cdp_connect_attempt", "meta": {"url": "https://www.wuxiaworld.com/novel/nine-star-hegemon"}}
+{"ts": "2026-03-03T01:27:37.621605Z", "stage": "discovery", "event": "exception", "meta": {"error": "TypeError: PlaywrightDiscoveryService._collect_chapters() missing 2 required positional arguments: 'scope' and 'series_url'", "debug_run_dir": "logs\\debug_runs\\20260302_202727_71588"}}
+{"ts": "2026-03-03T01:28:33.960967Z", "stage": "discovery", "event": "cdp_connect_attempt", "meta": {"url": "https://www.wuxiaworld.com/novel/nine-star-hegemon"}}
+{"ts": "2026-03-03T01:28:40.501712Z", "stage": "discovery", "event": "exception", "meta": {"error": "NameError: name 'urlparse' is not defined", "debug_run_dir": "logs\\debug_runs\\20260302_202833_48400"}}
+{"ts": "2026-03-03T01:30:04.814353Z", "stage": "discovery", "event": "cdp_connect_attempt", "meta": {"url": "https://www.wuxiaworld.com/novel/nine-star-hegemon"}}
