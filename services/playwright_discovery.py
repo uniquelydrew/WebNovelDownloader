@@ -32,15 +32,25 @@ class PlaywrightDiscoveryService:
             os.getenv("WNS_TRAVERSAL_CACHE_TTL", 60 * 60 * 24)
         )
 
-    def load(self, url: str) -> dict:
-        key = hashlib.sha256(url.encode("utf-8")).hexdigest()
-        cache_path = self.cache_root / f"{key}.json"
+        # Traversal cache (volume tree only)
+        self.cache_root = self.project_root / "cache" / "traversal"
+        self.cache_root.mkdir(parents=True, exist_ok=True)
 
-        if os.getenv("WNS_TRAVERSAL_CACHE_DISABLE") != "1":
-            if cache_path.exists():
-                age = time.time() - cache_path.stat().st_mtime
-                if age < self.cache_ttl_seconds:
-                    return json.loads(cache_path.read_text(encoding="utf-8"))
+        self.cache_ttl_seconds = int(
+            os.getenv("WNS_TRAVERSAL_CACHE_TTL", 60 * 60 * 24)
+        )
+
+    def load(self, url: str) -> dict:
+        force_refresh = os.getenv("WNS_TRAVERSAL_FORCE_REFRESH") == "1"
+        cache_disabled = os.getenv("WNS_TRAVERSAL_CACHE_DISABLE") == "1"
+
+        cache_key = hashlib.sha256(url.encode("utf-8")).hexdigest()
+        cache_path = self.cache_root / f"{cache_key}.json"
+
+        if not cache_disabled and not force_refresh and cache_path.exists():
+            age = time.time() - cache_path.stat().st_mtime
+            if age < self.cache_ttl_seconds:
+                return json.loads(cache_path.read_text(encoding="utf-8"))
 
         run_dir = self._make_run_dir()
         console_path = run_dir / "console.jsonl"
