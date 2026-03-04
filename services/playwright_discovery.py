@@ -73,6 +73,10 @@ class PlaywrightDiscoveryService:
 
         self.logger.log("discovery", "cdp_connect_attempt", {"url": url, "run_dir": str(run_dir)})
 
+        # Workspace is created as soon as the index URL is verified (page loads).
+        # This enables partial recovery if discovery is interrupted.
+        ws: WorkspaceManager | None = None
+
         with sync_playwright() as p:
             browser = p.chromium.connect_over_cdp("http://127.0.0.1:9222")
             if not browser.contexts:
@@ -87,12 +91,30 @@ class PlaywrightDiscoveryService:
                 page.goto(url, timeout=60000)
                 page.wait_for_load_state("domcontentloaded", timeout=60000)
 
+                # Index URL verified: create workspace immediately.
+                try:
+                    ws = WorkspaceManager(series_url=url, series_title=None)
+                except Exception as e:
+                    ws = None
+                    self.logger.log(
+                        "discovery",
+                        "workspace_init_failed",
+                        {"error": f"{type(e).__name__}: {e}"},
+                    )
+
                 self._dump_page(run_dir, page, phase="after_goto")
 
                 time.sleep(2.0)
                 self._dump_page(run_dir, page, phase="after_hydration_wait")
 
-                payload = self._extract_payload(page, url, run_dir=run_dir)
+                payload = self._extract_payload(page, url, run_dir=run_dir, workspace=ws)
+
+                if ws is not None:
+                    try:
+                        ws.update_series_title(payload.get("series_title") or "Unknown Series")
+                        ws.mark_completed()
+                    except Exception:
+                        pass
 
                 # Persist payload for offline inspection
                 self._persist_payload_snapshot(payload)
@@ -116,6 +138,12 @@ class PlaywrightDiscoveryService:
                     self._dump_page(run_dir, page, phase="exception")
                 except Exception:
                     pass
+
+                if ws is not None:
+                    try:
+                        ws.mark_error(f"{type(e).__name__}: {e}")
+                    except Exception:
+                        pass
                 self.logger.log(
                     "discovery",
                     "exception",
@@ -132,8 +160,14 @@ class PlaywrightDiscoveryService:
                 except Exception:
                     pass
 
-    def _extract_payload(self, page, url: str, run_dir: Path) -> dict:
+    def _extract_payload(self, page, url: str, run_dir: Path, workspace: WorkspaceManager | None) -> dict:
         series_title = (page.title() or "").strip() or "Unknown Series"
+
+        if workspace is not None:
+            try:
+                workspace.update_series_title(series_title)
+            except Exception:
+                pass
 
         parsed = urlparse(url)
         base = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else "https://www.wuxiaworld.com"
@@ -216,6 +250,17 @@ class PlaywrightDiscoveryService:
                 if chapters:
                     volumes.append({"title": title, "chapters": chapters})
 
+                    # Incremental workspace update: write after each volume.
+                    if workspace is not None:
+                        try:
+                            workspace.append_volume(title=title, chapters=chapters)
+                        except Exception as e:
+                            self.logger.log(
+                                "discovery",
+                                "workspace_volume_write_failed",
+                                {"index": i, "title": title, "error": f"{type(e).__name__}: {e}"},
+                            )
+
             # Dump DOM after expansions for offline inspection
             try:
                 (run_dir / "post_volume_expansion_page.html").write_text(page.content(), encoding="utf-8")
@@ -234,6 +279,17 @@ class PlaywrightDiscoveryService:
         print(f"[DISCOVERY] Flat mode: {len(chapters)} chapters", file=sys.stdout, flush=True)
         if chapters:
             volumes.append({"title": "Volume 1", "chapters": chapters})
+
+            # Incremental workspace update (flat mode is a single synthetic volume).
+            if workspace is not None:
+                try:
+                    workspace.append_volume(title="Volume 1", chapters=chapters)
+                except Exception as e:
+                    self.logger.log(
+                        "discovery",
+                        "workspace_volume_write_failed",
+                        {"index": 0, "title": "Volume 1", "error": f"{type(e).__name__}: {e}"},
+                    )
 
         return {
             "debug_run_dir": str(run_dir),
