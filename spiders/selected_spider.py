@@ -110,9 +110,11 @@ class SelectedSpider(scrapy.Spider):
             volume_index=int(meta["volume_index"]),
             volume_title=str(meta["volume_title"]),
             chapter_index=int(meta["chapter_index"]),
+            global_index=(int(meta["global_index"]) if meta.get("global_index") is not None else None),
             chapter_title=str(meta["chapter_title"]).strip() or f"Chapter {meta['chapter_index']}",
             chapter_url=response.url,
             text=clean,
+            language=str(meta.get("language") or "en"),
         )
 
         self._chapters.append(ch)
