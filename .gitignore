@@ -6,3 +6,11 @@
 /.idea/inspectionProfiles/profiles_settings.xml
 /.idea/modules.xml
 /.idea/.gitignore
+/cache/
+/gui/logs/debug_runs/
+/log/debug_runs/
+/log/payload_snapshots/
+/wnd_mod/
+**/__pycache__/
+*.pyc
+

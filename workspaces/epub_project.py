@@ -35,16 +35,16 @@ def normalize_chapter_title(raw_title: str, volume_chapter_index: int) -> tuple[
     if m:
         info["parsed"] = True
         try:
-            num = int(m.group(1))
+            parsed_num = int(m.group(1))
         except Exception:
-            num = volume_chapter_index
+            parsed_num = volume_chapter_index
         subtitle = (m.group(2) or "").strip()
-        info["parsed_number"] = num
+        info["parsed_number"] = parsed_num
         info["parsed_subtitle"] = subtitle
-        n = num
     else:
-        n = volume_chapter_index
         subtitle = raw
+
+    n = volume_chapter_index
 
     if subtitle:
         return f"Chapter {n} — {subtitle}", info
@@ -90,6 +90,75 @@ def _chapter_filename(volume_index: int, volume_chapter_index: int) -> str:
     return f"v{volume_index:02d}c{volume_chapter_index:03d}.xhtml"
 
 
+
+
+def _dedupe_issue_records(issues: list[Any]) -> list[Any]:
+    seen: set[str] = set()
+    out: list[Any] = []
+    for issue in issues:
+        key = json.dumps(issue, sort_keys=True, ensure_ascii=False)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(issue)
+    return out
+
+
+def _render_nav_xhtml(series_title: str, chapters: list[dict[str, Any]]) -> str:
+    items = []
+    for rec in chapters:
+        href = _xml_escape(Path(rec.get("file") or "").name)
+        title = _xml_escape(str(rec.get("chapter_title") or "Untitled Chapter"))
+        if not href:
+            continue
+        items.append(f'      <li><a href="chapters/{href}">{title}</a></li>')
+    nav_items = "\n".join(items)
+    return (
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        '<!DOCTYPE html>\n'
+        '<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">\n'
+        '<head><title>Navigation</title><meta charset="utf-8" /></head>\n'
+        '<body>\n'
+        f'  <nav epub:type="toc" id="toc"><h1>{_xml_escape(series_title)}</h1><ol>\n{nav_items}\n  </ol></nav>\n'
+        '</body>\n'
+        '</html>\n'
+    )
+
+
+def _render_content_opf(series_title: str, language: str, chapters: list[dict[str, Any]], author: Optional[str], description: Optional[str]) -> str:
+    manifest_items = [
+        '    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>',
+        '    <item id="css" href="styles/style.css" media-type="text/css"/>',
+    ]
+    spine_items = ['    <itemref idref="nav" linear="no"/>']
+    for idx, rec in enumerate(chapters, start=1):
+        href = _xml_escape(str(rec.get("file") or "").removeprefix("OEBPS/"))
+        manifest_items.append(f'    <item id="chap{idx}" href="{href}" media-type="application/xhtml+xml"/>')
+        spine_items.append(f'    <itemref idref="chap{idx}"/>')
+
+    metadata_lines = [
+        f'    <dc:title>{_xml_escape(series_title)}</dc:title>',
+        f'    <dc:language>{_xml_escape(language or "en")}</dc:language>',
+    ]
+    if author:
+        metadata_lines.append(f'    <dc:creator>{_xml_escape(author)}</dc:creator>')
+    if description:
+        metadata_lines.append(f'    <dc:description>{_xml_escape(description)}</dc:description>')
+
+    return (
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        '<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="bookid" version="3.0">\n'
+        '  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">\n'
+        + "\n".join(metadata_lines) + '\n'
+        '  </metadata>\n'
+        '  <manifest>\n'
+        + "\n".join(manifest_items) + '\n'
+        '  </manifest>\n'
+        '  <spine>\n'
+        + "\n".join(spine_items) + '\n'
+        '  </spine>\n'
+        '</package>\n'
+    )
 def _render_chapter_xhtml(lang: str, volume_title: str, chapter_title: str, text: str, meta: dict[str, Any]) -> str:
     paras = []
     for line in (text or "").split("\n"):
@@ -117,8 +186,7 @@ def _render_chapter_xhtml(lang: str, volume_title: str, chapter_title: str, text
         '  <link rel="stylesheet" type="text/css" href="../styles/style.css" />\n'
         "</head>\n"
         "<body>\n"
-        f'  <h1 class="volume-title">{_xml_escape(volume_title)}</h1>\n'
-        f'  <h2 class="chapter-title">{_xml_escape(chapter_title)}</h2>\n'
+        f'  <h1 class="chapter-title">{_xml_escape(chapter_title)}</h1>\n'
         f"  {paras_html}\n"
         "</body>\n"
         "</html>\n"
@@ -262,7 +330,7 @@ class EpubWorkspaceProject:
         author: Optional[str] = None,
         description: Optional[str] = None,
     ) -> None:
-        """High-value enhancements pass + rebuild OPF/NCX/NAV."""
+        """Normalize chapter records and persist a repaired workspace state."""
         ws = self._load_ws()
         chapters = list(ws.get("chapters") or [])
 
@@ -320,6 +388,16 @@ class EpubWorkspaceProject:
                 except Exception:
                     pass
 
+        chapters = sorted(
+            chapters,
+            key=lambda rec: (
+                int(rec.get("volume_index") or 0),
+                int(rec.get("global_index")) if rec.get("global_index") is not None else 10**9,
+                int(rec.get("volume_chapter_index") or 0),
+                str(rec.get("url") or ""),
+            ),
+        )
+
         # Rebuild lookup indices
         by_url: dict[str, int] = {}
         by_global: dict[str, int] = {}
@@ -365,3 +443,20 @@ class EpubWorkspaceProject:
             ws.setdefault("issues", []).append(
                 {"type": "duplicate_content", "groups": len(dup_groups), "count": sum(len(v) for v in dup_groups.values())}
             )
+
+        ws["series_title"] = series_title
+        ws.setdefault("language", language or "en")
+        ws["language"] = language or ws.get("language") or "en"
+        ws["issues"] = _dedupe_issue_records(list(ws.get("issues") or []))
+
+        nav_path = self.oebps / "nav.xhtml"
+        nav_path.write_text(_render_nav_xhtml(series_title, chapters), encoding="utf-8", newline="\n")
+
+        opf_path = self.oebps / "content.opf"
+        opf_path.write_text(
+            _render_content_opf(series_title, ws["language"], chapters, author, description),
+            encoding="utf-8",
+            newline="\n",
+        )
+
+        self._save_ws(ws)

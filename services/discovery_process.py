@@ -6,14 +6,18 @@ import sys
 from typing import Any
 
 
-def discovery_entry(url: str, conn) -> None:
+def discovery_entry(url: str, conn, force_refresh: bool = False) -> None:
     try:
         if sys.platform.startswith("win"):
             asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
         from services.playwright_discovery import PlaywrightDiscoveryService
 
-        payload = PlaywrightDiscoveryService().load(url)
+        service = PlaywrightDiscoveryService()
+        if force_refresh:
+            import os
+            os.environ["WNS_TRAVERSAL_FORCE_REFRESH"] = "1"
+        payload = service.load(url)
         conn.send({"ok": True, "payload": payload})
     except Exception as e:
         try:
@@ -28,12 +32,13 @@ def discovery_entry(url: str, conn) -> None:
 
 
 class DiscoveryProcess:
-    def __init__(self, url: str):
+    def __init__(self, url: str, *, force_refresh: bool = False):
         self.url = url
+        self.force_refresh = force_refresh
         self.parent_conn, self.child_conn = mp.Pipe(duplex=False)
         self.process = mp.Process(
             target=discovery_entry,
-            args=(self.url, self.child_conn),
+            args=(self.url, self.child_conn, self.force_refresh),
             daemon=True,
         )
 

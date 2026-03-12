@@ -12,6 +12,7 @@ from urllib.parse import urljoin, urlparse
 from playwright.sync_api import sync_playwright
 
 from utils.rotating_logger import LineRotatingJSONLogger
+from workspaces.manager import WorkspaceManager
 
 
 class PlaywrightDiscoveryService:
@@ -116,8 +117,9 @@ class PlaywrightDiscoveryService:
                     except Exception:
                         pass
 
-                # Persist payload for offline inspection
+                # Persist payload for offline inspection and future cache hits.
                 self._persist_payload_snapshot(payload)
+                cache_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
                 (run_dir / "payload.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
                 self.logger.log(
@@ -313,16 +315,17 @@ class PlaywrightDiscoveryService:
 
             abs_href = urljoin(base, href)
 
-            # Prefer the chapter title span; fallback to anchor inner_text
+            # Prefer DOM text over innerText; WuxiaWorld lazily renders long chapter lists,
+            # and offscreen rows can return an empty innerText even when textContent exists.
             title_span = a.locator("span").first
             try:
-                title = (title_span.inner_text() or "").strip()
+                title = " ".join(((title_span.text_content() or "").strip()).split())
             except Exception:
                 title = ""
 
             if not title:
                 try:
-                    title = (a.inner_text() or "").strip()
+                    title = " ".join(((a.text_content() or "").strip()).split())
                 except Exception:
                     title = abs_href
 

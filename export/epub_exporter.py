@@ -1,19 +1,45 @@
 from __future__ import annotations
+
 import html
 import uuid
 import zipfile
-from pathlib import Path
 from datetime import datetime, timezone
+from pathlib import Path
 
 from export.base import BaseExporter
 from export.bundle import VolumeExportBundle
 
+
 def _xml_escape(s: str) -> str:
     return html.escape(s, quote=True)
+
 
 def _read_style_bytes() -> bytes:
     css_path = Path(__file__).with_name("epub_style.css")
     return css_path.read_bytes()
+
+
+def _chapter_subtitle(raw_title: str) -> str:
+    title = (raw_title or "").strip()
+    lower = title.lower()
+    if not lower.startswith("chapter"):
+        return title
+
+    for sep in (" - ", ": "):
+        idx = title.find(sep)
+        if idx != -1:
+            return title[idx + len(sep):].strip()
+
+    parts = title.split(maxsplit=2)
+    if len(parts) >= 3 and parts[1].isdigit():
+        return parts[2].strip()
+    return ""
+
+
+def _display_chapter_title(raw_title: str, volume_chapter_index: int) -> str:
+    subtitle = _chapter_subtitle(raw_title)
+    return f"Chapter {volume_chapter_index} - {subtitle}" if subtitle else f"Chapter {volume_chapter_index}"
+
 
 class EPUBExporter(BaseExporter):
     """
@@ -33,29 +59,28 @@ class EPUBExporter(BaseExporter):
         book_id = str(uuid.uuid4())
         volume_title = bundle.volume.title
         title = f"{meta.title} - {volume_title}"
-
         modified = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+        display_chapters: list[dict[str, str]] = []
         chapter_files: list[tuple[str, str]] = []
-        for ch in bundle.chapters:
-            fname = f"OEBPS/chap_{ch.chapter_index:04d}.xhtml"
-            chapter_files.append((fname, self._chapter_xhtml(meta.language, volume_title, ch.chapter_title, ch.text)))
+        for volume_chapter_index, ch in enumerate(bundle.chapters, start=1):
+            href = f"chap_{volume_chapter_index:04d}.xhtml"
+            display_title = _display_chapter_title(ch.chapter_title, volume_chapter_index)
+            display_chapters.append({"href": href, "title": display_title})
+            chapter_files.append((f"OEBPS/{href}", self._chapter_xhtml(meta.language, display_title, ch.text)))
 
         style_bytes = _read_style_bytes()
-        nav_xhtml = self._nav_xhtml(meta.language, title, bundle.chapters)
-        ncx = self._toc_ncx(book_id, title, bundle.chapters)
-        opf = self._content_opf(book_id, title, meta, modified, bundle.chapters)
+        nav_xhtml = self._nav_xhtml(meta.language, title, display_chapters)
+        ncx = self._toc_ncx(book_id, title, display_chapters)
+        opf = self._content_opf(book_id, title, meta, modified, display_chapters)
 
         with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as z:
-            # mimetype must be first and uncompressed
             z.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
             z.writestr("META-INF/container.xml", self._container_xml())
-
             z.writestr("OEBPS/styles/style.css", style_bytes)
             z.writestr("OEBPS/nav.xhtml", nav_xhtml)
             z.writestr("OEBPS/toc.ncx", ncx)
             z.writestr("OEBPS/content.opf", opf)
-
             for fname, content in chapter_files:
                 z.writestr(fname, content)
 
@@ -68,7 +93,7 @@ class EPUBExporter(BaseExporter):
 </container>
 '''
 
-    def _chapter_xhtml(self, lang: str, volume: str, chapter: str, text: str) -> str:
+    def _chapter_xhtml(self, lang: str, chapter: str, text: str) -> str:
         paras = []
         for line in text.split("\n"):
             line = line.strip()
@@ -87,18 +112,16 @@ class EPUBExporter(BaseExporter):
             '  <link rel="stylesheet" type="text/css" href="styles/style.css" />\n'
             '</head>\n'
             '<body>\n'
-            f'  <h1 class="volume-title">{_xml_escape(volume)}</h1>\n'
-            f'  <h2 class="chapter-title">{_xml_escape(chapter)}</h2>\n'
+            f'  <h1 class="chapter-title">{_xml_escape(chapter)}</h1>\n'
             f'  {paras_html}\n'
             '</body>\n'
             '</html>\n'
         )
 
-    def _nav_xhtml(self, lang: str, title: str, chapters) -> str:
+    def _nav_xhtml(self, lang: str, title: str, chapters: list[dict[str, str]]) -> str:
         lis = []
         for ch in chapters:
-            href = f"chap_{ch.chapter_index:04d}.xhtml"
-            lis.append(f'<li><a href="{href}">{_xml_escape(ch.chapter_title)}</a></li>')
+            lis.append(f'<li><a href="{ch["href"]}">{_xml_escape(ch["title"])}</a></li>')
         lis_html = "\n      ".join(lis)
         return (
             '<?xml version="1.0" encoding="utf-8"?>\n'
@@ -120,22 +143,19 @@ class EPUBExporter(BaseExporter):
             '</html>\n'
         )
 
-    def _toc_ncx(self, book_id: str, title: str, chapters) -> str:
+    def _toc_ncx(self, book_id: str, title: str, chapters: list[dict[str, str]]) -> str:
         navpoints = []
-        play = 1
-        for ch in chapters:
-            src = f"chap_{ch.chapter_index:04d}.xhtml"
+        for play, ch in enumerate(chapters, start=1):
             navpoints.append(
                 "    <navPoint id=\"navPoint-{play}\" playOrder=\"{play}\">\n"
                 "      <navLabel><text>{label}</text></navLabel>\n"
                 "      <content src=\"{src}\"/>\n"
                 "    </navPoint>".format(
                     play=play,
-                    label=_xml_escape(ch.chapter_title),
-                    src=src,
+                    label=_xml_escape(ch["title"]),
+                    src=ch["href"],
                 )
             )
-            play += 1
 
         navpoints_xml = "\n".join(navpoints)
         return (
@@ -154,7 +174,7 @@ class EPUBExporter(BaseExporter):
             '</ncx>\n'
         )
 
-    def _content_opf(self, book_id: str, title: str, meta, modified: str, chapters) -> str:
+    def _content_opf(self, book_id: str, title: str, meta, modified: str, chapters: list[dict[str, str]]) -> str:
         manifest_items = [
             '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>',
             '<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>',
@@ -162,16 +182,14 @@ class EPUBExporter(BaseExporter):
         ]
         spine_items = ['<itemref idref="nav"/>']
 
-        for ch in chapters:
-            cid = f"chap{ch.chapter_index:04d}"
-            href = f"chap_{ch.chapter_index:04d}.xhtml"
-            manifest_items.append(f'<item id="{cid}" href="{href}" media-type="application/xhtml+xml"/>')
+        for idx, ch in enumerate(chapters, start=1):
+            cid = f"chap{idx:04d}"
+            manifest_items.append(f'<item id="{cid}" href="{ch["href"]}" media-type="application/xhtml+xml"/>')
             spine_items.append(f'<itemref idref="{cid}"/>')
 
         author_meta = f"<dc:creator>{_xml_escape(meta.author)}</dc:creator>" if meta.author else ""
         desc_meta = f"<dc:description>{_xml_escape(meta.description)}</dc:description>" if meta.description else ""
         lang_meta = _xml_escape(getattr(meta, "language", None) or "en")
-
         manifest_block = "\n    ".join(manifest_items)
         spine_block = "\n    ".join(spine_items)
 
