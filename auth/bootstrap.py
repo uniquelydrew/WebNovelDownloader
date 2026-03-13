@@ -1,20 +1,26 @@
-import os
+﻿from __future__ import annotations
+
 import argparse
-from pathlib import Path
+import os
+
 from playwright.sync_api import sync_playwright
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-AUTH_DIR = PROJECT_ROOT / "auth"
-AUTH_DIR.mkdir(exist_ok=True)
-STORAGE_PATH = AUTH_DIR / "storage_state.json"
+from utils.app_paths import auth_root, auth_storage_path, configure_playwright_env
 
 
-def bootstrap(login_url: str):
+AUTH_DIR = auth_root()
+STORAGE_PATH = auth_storage_path()
+
+
+def bootstrap(login_url: str) -> None:
     username = os.getenv("WN_USERNAME")
     password = os.getenv("WN_PASSWORD")
 
     if not username or not password:
         raise RuntimeError("WN_USERNAME and WN_PASSWORD must be set.")
+
+    configure_playwright_env()
+    AUTH_DIR.mkdir(parents=True, exist_ok=True)
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
@@ -33,8 +39,13 @@ def bootstrap(login_url: str):
         browser.close()
 
 
-if __name__ == "__main__":
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--login-url", required=True)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     bootstrap(args.login_url)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

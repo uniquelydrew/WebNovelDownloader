@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import os
@@ -6,40 +6,26 @@ import sys
 import time
 import hashlib
 from datetime import datetime
-from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
 from playwright.sync_api import sync_playwright
 
+from utils.app_paths import cache_root, configure_playwright_env, log_root
+from utils.browser_runtime import cdp_endpoint, ensure_managed_browser
 from utils.rotating_logger import LineRotatingJSONLogger
 from workspaces.manager import WorkspaceManager
 
 
 class PlaywrightDiscoveryService:
     def __init__(self):
-        # Project root is parent of /services
-        self.project_root = Path(__file__).resolve().parents[1]
-        self.log_root = self.project_root / "log"
-        self.log_root.mkdir(parents=True, exist_ok=True)
-
+        configure_playwright_env()
+        self.log_root = log_root()
         self.logger = LineRotatingJSONLogger(str(self.log_root / "discovery.log"))
-
         self.snapshot_dir = self.log_root / "payload_snapshots"
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
-
-        self.cache_root = self.project_root / "cache"
+        self.cache_root = cache_root() / "traversal"
         self.cache_root.mkdir(parents=True, exist_ok=True)
-        self.cache_ttl_seconds = int(
-            os.getenv("WNS_TRAVERSAL_CACHE_TTL", 60 * 60 * 24)
-        )
-
-        # Traversal cache (volume tree only)
-        self.cache_root = self.project_root / "cache" / "traversal"
-        self.cache_root.mkdir(parents=True, exist_ok=True)
-
-        self.cache_ttl_seconds = int(
-            os.getenv("WNS_TRAVERSAL_CACHE_TTL", 60 * 60 * 24)
-        )
+        self.cache_ttl_seconds = int(os.getenv("WNS_TRAVERSAL_CACHE_TTL", 60 * 60 * 24))
 
     def load(self, url: str) -> dict:
         force_refresh = os.getenv("WNS_TRAVERSAL_FORCE_REFRESH") == "1"
@@ -47,7 +33,6 @@ class PlaywrightDiscoveryService:
 
         cache_key = hashlib.sha256(url.encode("utf-8")).hexdigest()
         cache_path = self.cache_root / f"{cache_key}.json"
-
         if not cache_disabled and not force_refresh and cache_path.exists():
             age = time.time() - cache_path.stat().st_mtime
             if age < self.cache_ttl_seconds:
@@ -57,32 +42,35 @@ class PlaywrightDiscoveryService:
         console_path = run_dir / "console.jsonl"
 
         def on_console(msg):
-            # Best-effort capture of browser console
             try:
-                rec = {
-                    "ts": time.time(),
-                    "type": msg.type,
-                    "text": msg.text,
-                }
+                rec = {"ts": time.time(), "type": msg.type, "text": msg.text}
                 if not console_path.exists():
                     console_path.write_text("", encoding="utf-8")
                 with console_path.open("a", encoding="utf-8") as f:
                     f.write(json.dumps(rec, ensure_ascii=False) + "\n")
             except Exception:
-                # Console capture must never break discovery
                 pass
 
-        self.logger.log("discovery", "cdp_connect_attempt", {"url": url, "run_dir": str(run_dir)})
+        launch_result = ensure_managed_browser(open_url=url)
+        self.logger.log(
+            "discovery",
+            "cdp_ready",
+            {
+                "url": url,
+                "run_dir": str(run_dir),
+                "endpoint": launch_result.endpoint,
+                "launched": launch_result.launched,
+                "already_running": launch_result.already_running,
+                "browser_executable": launch_result.browser_executable,
+            },
+        )
 
-        # Workspace is created as soon as the index URL is verified (page loads).
-        # This enables partial recovery if discovery is interrupted.
         ws: WorkspaceManager | None = None
-
         with sync_playwright() as p:
-            browser = p.chromium.connect_over_cdp("http://127.0.0.1:9222")
+            browser = p.chromium.connect_over_cdp(cdp_endpoint())
             if not browser.contexts:
                 self._write_probe(run_dir, {"fatal": "no_cdp_contexts"})
-                raise RuntimeError("No Chrome contexts available on CDP connection.")
+                raise RuntimeError("No browser contexts available on CDP connection.")
 
             context = browser.contexts[0]
             page = context.new_page()
@@ -91,23 +79,17 @@ class PlaywrightDiscoveryService:
             try:
                 page.goto(url, timeout=60000)
                 page.wait_for_load_state("domcontentloaded", timeout=60000)
+                self._ensure_oldest_first(page)
 
-                # Index URL verified: create workspace immediately.
                 try:
                     ws = WorkspaceManager(series_url=url, series_title=None)
                 except Exception as e:
                     ws = None
-                    self.logger.log(
-                        "discovery",
-                        "workspace_init_failed",
-                        {"error": f"{type(e).__name__}: {e}"},
-                    )
+                    self.logger.log("discovery", "workspace_init_failed", {"error": f"{type(e).__name__}: {e}"})
 
                 self._dump_page(run_dir, page, phase="after_goto")
-
                 time.sleep(2.0)
                 self._dump_page(run_dir, page, phase="after_hydration_wait")
-
                 payload = self._extract_payload(page, url, run_dir=run_dir, workspace=ws)
 
                 if ws is not None:
@@ -117,11 +99,9 @@ class PlaywrightDiscoveryService:
                     except Exception:
                         pass
 
-                # Persist payload for offline inspection and future cache hits.
                 self._persist_payload_snapshot(payload)
                 cache_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
                 (run_dir / "payload.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-
                 self.logger.log(
                     "discovery",
                     "payload_complete",
@@ -132,39 +112,51 @@ class PlaywrightDiscoveryService:
                     },
                 )
                 self.logger.log("discovery", "payload_full", payload)
-
                 return payload
-
             except Exception as e:
                 try:
                     self._dump_page(run_dir, page, phase="exception")
                 except Exception:
                     pass
-
                 if ws is not None:
                     try:
                         ws.mark_error(f"{type(e).__name__}: {e}")
                     except Exception:
                         pass
-                self.logger.log(
-                    "discovery",
-                    "exception",
-                    {"error": f"{type(e).__name__}: {e}", "debug_run_dir": str(run_dir)},
-                )
+                self.logger.log("discovery", "exception", {"error": f"{type(e).__name__}: {e}", "debug_run_dir": str(run_dir)})
                 raise
             finally:
                 try:
                     page.close()
                 except Exception:
                     pass
-                try:
-                    browser.close()
-                except Exception:
-                    pass
 
-    def _extract_payload(self, page, url: str, run_dir: Path, workspace: WorkspaceManager | None) -> dict:
+    def _ensure_oldest_first(self, page) -> None:
+        selectors = [
+            "button:has-text('Oldest')",
+            "[role='button']:has-text('Oldest')",
+            "button:has-text('Ascending')",
+            "[role='button']:has-text('Ascending')",
+            "button[aria-label*='oldest' i]",
+            "[role='button'][aria-label*='oldest' i]",
+        ]
+        for selector in selectors:
+            try:
+                loc = page.locator(selector)
+                if loc.count() <= 0:
+                    continue
+                target = loc.first
+                target.scroll_into_view_if_needed(timeout=3000)
+                target.click(timeout=5000)
+                time.sleep(0.75)
+                self.logger.log("discovery", "sort_order_set", {"selector": selector})
+                return
+            except Exception:
+                continue
+        self.logger.log("discovery", "sort_order_set", {"selector": None, "fallback": "reverse_collected_order"})
+
+    def _extract_payload(self, page, url: str, run_dir, workspace: WorkspaceManager | None) -> dict:
         series_title = (page.title() or "").strip() or "Unknown Series"
-
         if workspace is not None:
             try:
                 workspace.update_series_title(series_title)
@@ -173,13 +165,9 @@ class PlaywrightDiscoveryService:
 
         parsed = urlparse(url)
         base = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else "https://www.wuxiaworld.com"
-
         volumes: list[dict] = []
-
-        # Prefer direct accordion traversal (WuxiaWorld index uses MUI accordion for volumes)
         accordions = page.locator(".MuiAccordion-root")
         accordion_count = accordions.count()
-
         self.logger.log(
             "discovery",
             "dom_metrics",
@@ -197,13 +185,10 @@ class PlaywrightDiscoveryService:
                 summary = accordion.locator("[role='button']")
                 title_el = summary.locator("span.font-set-sb18")
                 title = (title_el.inner_text() or "").strip() or f"Volume {i + 1}"
-
-                # Expand if needed
                 try:
                     expanded = summary.get_attribute("aria-expanded")
                 except Exception:
                     expanded = None
-
                 if expanded != "true":
                     try:
                         summary.scroll_into_view_if_needed(timeout=5000)
@@ -213,12 +198,9 @@ class PlaywrightDiscoveryService:
                         summary.click(timeout=5000)
                     except Exception:
                         pass
-                    # Let MUI animation/lazy mount complete
                     time.sleep(0.6)
 
                 details = accordion.locator(".MuiAccordionDetails-root")
-
-                # Wait until chapters mount inside this accordion
                 try:
                     page.wait_for_function(
                         """
@@ -231,111 +213,67 @@ class PlaywrightDiscoveryService:
                         timeout=15000,
                     )
                 except Exception:
-                    # Snapshot per-volume failure
-                    self.logger.log(
-                        "discovery",
-                        "volume_wait_timeout",
-                        {"index": i, "title": title, "debug_run_dir": str(run_dir)},
-                    )
+                    self.logger.log("discovery", "volume_wait_timeout", {"index": i, "title": title, "debug_run_dir": str(run_dir)})
 
-                chapters = self._collect_chapters_from_details(details, base=base)
-
-                # Console trace per volume (requested)
+                chapters = self._normalize_chapter_order(self._collect_chapters_from_details(details, base=base))
                 print(f"[DISCOVERY] Volume {i + 1}: {title} ({len(chapters)} chapters)", file=sys.stdout, flush=True)
-
-                self.logger.log(
-                    "discovery",
-                    "volume_collected",
-                    {"index": i, "title": title, "chapter_count": len(chapters)},
-                )
+                self.logger.log("discovery", "volume_collected", {"index": i, "title": title, "chapter_count": len(chapters)})
 
                 if chapters:
                     volumes.append({"title": title, "chapters": chapters})
-
-                    # Incremental workspace update: write after each volume.
                     if workspace is not None:
                         try:
                             workspace.append_volume(title=title, chapters=chapters)
                         except Exception as e:
-                            self.logger.log(
-                                "discovery",
-                                "workspace_volume_write_failed",
-                                {"index": i, "title": title, "error": f"{type(e).__name__}: {e}"},
-                            )
+                            self.logger.log("discovery", "workspace_volume_write_failed", {"index": i, "title": title, "error": f"{type(e).__name__}: {e}"})
 
-            # Dump DOM after expansions for offline inspection
             try:
                 (run_dir / "post_volume_expansion_page.html").write_text(page.content(), encoding="utf-8")
             except Exception:
                 pass
+            return {"debug_run_dir": str(run_dir), "series_title": series_title, "series_url": url, "volumes": volumes}
 
-            return {
-                "debug_run_dir": str(run_dir),
-                "series_title": series_title,
-                "series_url": url,
-                "volumes": volumes,
-            }
-
-        # Fallback: no accordion; collect flat chapter anchors (still structured as one synthetic volume)
-        chapters = self._collect_flat_chapters(page, base=base, series_url=url)
+        chapters = self._normalize_chapter_order(self._collect_flat_chapters(page, base=base, series_url=url))
         print(f"[DISCOVERY] Flat mode: {len(chapters)} chapters", file=sys.stdout, flush=True)
         if chapters:
             volumes.append({"title": "Volume 1", "chapters": chapters})
-
-            # Incremental workspace update (flat mode is a single synthetic volume).
             if workspace is not None:
                 try:
                     workspace.append_volume(title="Volume 1", chapters=chapters)
                 except Exception as e:
-                    self.logger.log(
-                        "discovery",
-                        "workspace_volume_write_failed",
-                        {"index": 0, "title": "Volume 1", "error": f"{type(e).__name__}: {e}"},
-                    )
+                    self.logger.log("discovery", "workspace_volume_write_failed", {"index": 0, "title": "Volume 1", "error": f"{type(e).__name__}: {e}"})
 
-        return {
-            "debug_run_dir": str(run_dir),
-            "series_title": series_title,
-            "series_url": url,
-            "volumes": volumes,
-        }
+        return {"debug_run_dir": str(run_dir), "series_title": series_title, "series_url": url, "volumes": volumes}
+
+    def _normalize_chapter_order(self, chapters: list[dict]) -> list[dict]:
+        if len(chapters) <= 1:
+            return chapters
+        return list(reversed(chapters))
 
     def _collect_chapters_from_details(self, details, base: str) -> list[dict]:
         anchors = details.locator("a.group")
-        n = anchors.count()
-
         items: list[dict] = []
         seen = set()
-
-        for i in range(n):
+        for i in range(anchors.count()):
             a = anchors.nth(i)
             href = a.get_attribute("href") or ""
             if not href:
                 continue
-
             abs_href = urljoin(base, href)
-
-            # Prefer DOM text over innerText; WuxiaWorld lazily renders long chapter lists,
-            # and offscreen rows can return an empty innerText even when textContent exists.
             title_span = a.locator("span").first
             try:
                 title = " ".join(((title_span.text_content() or "").strip()).split())
             except Exception:
                 title = ""
-
             if not title:
                 try:
                     title = " ".join(((a.text_content() or "").strip()).split())
                 except Exception:
                     title = abs_href
-
-            key = abs_href
-            if key in seen:
+            if abs_href in seen:
                 continue
-            seen.add(key)
-
+            seen.add(abs_href)
             items.append({"title": title, "url": abs_href})
-
         return items
 
     def _collect_flat_chapters(self, page, base: str, series_url: str) -> list[dict]:
@@ -343,21 +281,15 @@ class PlaywrightDiscoveryService:
         parts = [p for p in parsed.path.split("/") if p]
         series_slug = parts[-1] if parts else ""
         base_prefix = f"/novel/{series_slug}" if series_slug else ""
-
         anchors = page.locator("a[href*='/novel/']")
-
         prev = -1
         stable = 0
         for _ in range(160):
             cur = anchors.count()
-            if cur == prev:
-                stable += 1
-            else:
-                stable = 0
+            stable = stable + 1 if cur == prev else 0
             prev = cur
             if cur > 0 and stable >= 6:
                 break
-
             try:
                 page.mouse.wheel(0, 2000)
             except Exception:
@@ -366,32 +298,24 @@ class PlaywrightDiscoveryService:
 
         items: list[dict] = []
         seen = set()
-        n = anchors.count()
-
-        for i in range(n):
+        for i in range(anchors.count()):
             a = anchors.nth(i)
             href = a.get_attribute("href") or ""
             text = (a.inner_text() or "").strip()
-
             if not href:
                 continue
-
             if base_prefix:
                 if href.startswith("/") and not href.startswith(base_prefix + "/"):
                     continue
                 if href == base_prefix:
                     continue
-
             abs_href = urljoin(base, href)
             if not text:
                 text = abs_href
-
             if abs_href in seen:
                 continue
             seen.add(abs_href)
-
             items.append({"title": text, "url": abs_href})
-
         return items
 
     def _persist_payload_snapshot(self, payload: dict) -> None:
@@ -399,7 +323,7 @@ class PlaywrightDiscoveryService:
         snapshot_file = self.snapshot_dir / f"payload_{timestamp}.json"
         snapshot_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def _make_run_dir(self) -> Path:
+    def _make_run_dir(self):
         root = self.log_root / "debug_runs"
         root.mkdir(parents=True, exist_ok=True)
         stamp = time.strftime("%Y%m%d_%H%M%S")
@@ -407,12 +331,11 @@ class PlaywrightDiscoveryService:
         run_dir.mkdir(parents=True, exist_ok=True)
         return run_dir
 
-    def _dump_page(self, run_dir: Path, page, phase: str) -> None:
+    def _dump_page(self, run_dir, page, phase: str) -> None:
         try:
             page.screenshot(path=str(run_dir / f"{phase}_screenshot.png"), full_page=True)
         except Exception:
             pass
-
         try:
             html = page.content()
             (run_dir / f"{phase}_page.html").write_text(html, encoding="utf-8")
@@ -427,7 +350,6 @@ class PlaywrightDiscoveryService:
             probe["page_title"] = (page.title() or "").strip()
         except Exception:
             probe["page_title"] = ""
-
         (run_dir / f"{phase}_probe.json").write_text(json.dumps(probe, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _probe_dom(self, page) -> dict:
@@ -444,42 +366,30 @@ class PlaywrightDiscoveryService:
             "mui_accordion_details": ".MuiAccordionDetails-root",
             "anchor_group": "a.group",
         }
-
-        out = {
-            "ready_state": None,
-            "selectors": {},
-            "samples": {},
-            "chapter_link_samples": [],
-        }
-
+        out = {"ready_state": None, "selectors": {}, "samples": {}, "chapter_link_samples": []}
         try:
             out["ready_state"] = page.evaluate("() => document.readyState")
         except Exception:
             pass
-
         for k, sel in selectors.items():
             try:
                 out["selectors"][k] = page.locator(sel).count()
             except Exception:
                 out["selectors"][k] = None
-
         for k, sel in selectors.items():
             try:
                 loc = page.locator(sel)
-                n = min(3, loc.count())
                 samples = []
-                for i in range(n):
+                for i in range(min(3, loc.count())):
                     html = loc.nth(i).evaluate("el => el.outerHTML")
                     samples.append(html[:4000])
                 out["samples"][k] = samples
             except Exception:
                 out["samples"][k] = []
-
         try:
             loc = page.locator("a[href]")
-            n = min(2000, loc.count())
             got = 0
-            for i in range(n):
+            for i in range(min(2000, loc.count())):
                 href = loc.nth(i).get_attribute("href") or ""
                 if "/chapter/" in href:
                     text = (loc.nth(i).inner_text() or "").strip()
@@ -489,10 +399,9 @@ class PlaywrightDiscoveryService:
                         break
         except Exception:
             pass
-
         return out
 
-    def _write_probe(self, run_dir: Path, payload: dict) -> None:
+    def _write_probe(self, run_dir, payload: dict) -> None:
         try:
             (run_dir / "fatal_probe.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:

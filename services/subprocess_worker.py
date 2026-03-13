@@ -1,17 +1,17 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import os
 import subprocess
-import sys
 import tempfile
-from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
+from utils.app_paths import build_crawl_command, runtime_cwd
+
 
 class SubprocessCrawlWorker(QThread):
-    progress = Signal(int, int, str)     # done, total, message
+    progress = Signal(int, int, str)
     status = Signal(str)
     log = Signal(str)
     finished = Signal(bool, str)
@@ -23,7 +23,7 @@ class SubprocessCrawlWorker(QThread):
         self.fmt = fmt
 
     def run(self):
-        # Write selection JSON to a temp file for the subprocess
+        selection_path: str | None = None
         try:
             with tempfile.NamedTemporaryFile("w", delete=False, suffix=".json", encoding="utf-8") as f:
                 json.dump(self.selection_payload, f, ensure_ascii=False, indent=2)
@@ -34,27 +34,25 @@ class SubprocessCrawlWorker(QThread):
 
         try:
             self.status.emit("Launching crawl subprocess...")
-
-            # Use same python interpreter as GUI
             cmd = [
-                sys.executable,
-                str(Path(__file__).resolve().parents[1] / "cli" / "run_crawl.py"),
-                "--selection", selection_path,
-                "--out-dir", self.out_dir,
-                "--format", self.fmt,
+                *build_crawl_command(),
+                "--selection",
+                selection_path,
+                "--out-dir",
+                self.out_dir,
+                "--format",
+                self.fmt,
             ]
-
-            # Ensure working directory is repo root so imports resolve
-            cwd = str(Path(__file__).resolve().parents[1])
 
             proc = subprocess.Popen(
                 cmd,
-                cwd=cwd,
+                cwd=str(runtime_cwd()),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
                 universal_newlines=True,
+                env=os.environ.copy(),
             )
 
             assert proc.stdout is not None
@@ -63,7 +61,6 @@ class SubprocessCrawlWorker(QThread):
                 if not line:
                     continue
 
-                # Try parse structured JSON messages
                 try:
                     obj = json.loads(line)
                     typ = obj.get("type")
@@ -81,7 +78,6 @@ class SubprocessCrawlWorker(QThread):
                     else:
                         self.log.emit(line)
                 except Exception:
-                    # Fallback: plain log line
                     self.log.emit(line)
 
             rc = proc.wait()
@@ -90,7 +86,8 @@ class SubprocessCrawlWorker(QThread):
             else:
                 self.finished.emit(False, f"Subprocess exited with code {rc}")
         finally:
-            try:
-                os.unlink(selection_path)
-            except Exception:
-                pass
+            if selection_path:
+                try:
+                    os.unlink(selection_path)
+                except Exception:
+                    pass

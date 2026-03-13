@@ -1,8 +1,9 @@
-import json
-from pathlib import Path
+﻿import json
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-STORAGE_PATH = PROJECT_ROOT / "auth" / "storage_state.json"
+from utils.app_paths import auth_storage_path
+
+
+STORAGE_PATH = auth_storage_path()
 
 
 class StorageStateCookieMiddleware:

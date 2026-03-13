@@ -1,4 +1,4 @@
-/gui/logs/
+﻿/gui/logs/
 /.venv/
 /log/
 /.idea/WebNovelScraper.iml
@@ -11,6 +11,8 @@
 /log/debug_runs/
 /log/payload_snapshots/
 /wnd_mod/
+/.playwright-browsers/
+/build/
+/dist/
 **/__pycache__/
 *.pyc
-

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 
@@ -24,6 +24,7 @@ from gui.controllers.discovery_controller import DiscoveryController
 from gui.controllers.export_controller import ExportController
 from gui.controllers.selection_controller import SelectionController
 from gui.controllers.workspace_controller import WorkspaceController
+from utils.browser_runtime import browser_launch_url, ensure_managed_browser
 from workspaces.manager import WorkspaceManager
 
 
@@ -58,7 +59,11 @@ class MainWindow(QMainWindow):
         self.url_input = QLineEdit()
         row1.addWidget(self.url_input, 1)
 
-        self.open_ws_btn = QPushButton("Open Workspace…")
+        self.browser_btn = QPushButton("Launch Browser")
+        self.browser_btn.clicked.connect(lambda: self._launch_browser_for_current_url(show_dialog=True))
+        row1.addWidget(self.browser_btn)
+
+        self.open_ws_btn = QPushButton("Open Workspace...")
         self.open_ws_btn.clicked.connect(self._open_workspace_dialog)
         row1.addWidget(self.open_ws_btn)
 
@@ -83,7 +88,7 @@ class MainWindow(QMainWindow):
         self.dir_input.textChanged.connect(self._update_export_enabled)
         row2.addWidget(self.dir_input, 1)
 
-        self.browse_btn = QPushButton("Browse…")
+        self.browse_btn = QPushButton("Browse...")
         self.browse_btn.clicked.connect(self._select_directory)
         row2.addWidget(self.browse_btn)
 
@@ -112,11 +117,21 @@ class MainWindow(QMainWindow):
     def _build_menu(self) -> None:
         file_menu = self.menuBar().addMenu("File")
 
-        act_open_ws = QAction("Open Workspace…", self)
+        act_launch_browser = QAction("Launch Managed Browser", self)
+        act_launch_browser.triggered.connect(lambda: self._launch_browser_for_current_url(show_dialog=True))
+        file_menu.addAction(act_launch_browser)
+
+        act_open_browser_home = QAction("Open Managed Browser Home", self)
+        act_open_browser_home.triggered.connect(self._launch_browser_home)
+        file_menu.addAction(act_open_browser_home)
+
+        file_menu.addSeparator()
+
+        act_open_ws = QAction("Open Workspace...", self)
         act_open_ws.triggered.connect(self._open_workspace_dialog)
         file_menu.addAction(act_open_ws)
 
-        act_open_ws_dir = QAction("Open Workspace Folder…", self)
+        act_open_ws_dir = QAction("Open Workspace Folder...", self)
         act_open_ws_dir.triggered.connect(self._open_workspace_folder_dialog)
         file_menu.addAction(act_open_ws_dir)
 
@@ -138,10 +153,41 @@ class MainWindow(QMainWindow):
     def _set_busy(self, busy: bool) -> None:
         self.load_btn.setEnabled(not busy)
         self.refresh_btn.setEnabled((not busy) and bool(self.series_payload))
+        self.browser_btn.setEnabled(not busy)
         if busy:
             self.export_btn.setEnabled(False)
         else:
             self._update_export_enabled()
+
+    def _launch_browser_home(self) -> None:
+        self._launch_browser(browser_launch_url(), show_dialog=True)
+
+    def _launch_browser_for_current_url(self, *, show_dialog: bool) -> bool:
+        url = self.url_input.text().strip() or browser_launch_url()
+        return self._launch_browser(url, show_dialog=show_dialog)
+
+    def _launch_browser(self, url: str, *, show_dialog: bool) -> bool:
+        try:
+            result = ensure_managed_browser(open_url=url)
+        except Exception as e:
+            message = f"Failed to launch browser: {type(e).__name__}: {e}"
+            self._append_log(message)
+            if show_dialog:
+                QMessageBox.critical(self, "Browser Launch Failed", message)
+            return False
+
+        if result.launched:
+            message = f"Managed browser launched using {result.browser_executable}"
+        elif result.already_running:
+            message = f"Managed browser already available at {result.endpoint}"
+        else:
+            message = f"Managed browser ready at {result.endpoint}"
+
+        self._append_log(message)
+        self._append_log(f"Browser profile: {result.profile_dir}")
+        if show_dialog:
+            QMessageBox.information(self, "Browser Ready", message)
+        return True
 
     def _select_directory(self) -> None:
         directory = QFileDialog.getExistingDirectory(self, "Select Export Directory")
@@ -189,6 +235,9 @@ class MainWindow(QMainWindow):
         url = self.url_input.text().strip()
         if not url:
             QMessageBox.warning(self, "Error", "Please enter a URL.")
+            return
+
+        if not self._launch_browser(url, show_dialog=False):
             return
 
         if not force_refresh:
@@ -280,6 +329,9 @@ class MainWindow(QMainWindow):
         selection = self.selection_controller.collect_export_payload()
         if selection["total_chapters"] == 0:
             QMessageBox.warning(self, "Error", "No chapters selected.")
+            return
+
+        if not self._launch_browser_for_current_url(show_dialog=False):
             return
 
         fmt = self.format_select.currentText().strip()

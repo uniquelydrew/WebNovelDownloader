@@ -1,15 +1,14 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import os
 import subprocess
-import sys
 import tempfile
-from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
 from services.discovery_service import DiscoveryService
+from utils.app_paths import build_crawl_command, runtime_cwd
 
 
 class CrawlerWorker(QThread):
@@ -29,7 +28,6 @@ class CrawlerWorker(QThread):
         self.index_url = index_url
         self.output_dir = output_dir
         self.fmt = fmt
-        self.project_root = Path(__file__).resolve().parents[1]
 
     def run(self):
         selection_path: str | None = None
@@ -51,8 +49,7 @@ class CrawlerWorker(QThread):
                 selection_path = handle.name
 
             cmd = [
-                sys.executable,
-                str(self.project_root / "cli" / "run_crawl.py"),
+                *build_crawl_command(),
                 "--selection",
                 selection_path,
                 "--out-dir",
@@ -61,19 +58,15 @@ class CrawlerWorker(QThread):
                 self.fmt,
             ]
 
-            env = os.environ.copy()
-            pythonpath = str(self.project_root)
-            env["PYTHONPATH"] = pythonpath + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
-
             proc = subprocess.Popen(
                 cmd,
-                cwd=str(self.project_root),
+                cwd=str(runtime_cwd()),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 encoding="utf-8",
                 bufsize=1,
-                env=env,
+                env=os.environ.copy(),
             )
 
             for line in proc.stdout or []:
