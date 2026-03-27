@@ -3,6 +3,13 @@ from typing import Optional, Protocol, runtime_checkable, Any
 
 FOOTNOTE_BLOCK_XPATH = ".//*[starts-with(@id,'footnote-')]"
 FOOTNOTE_REF_LINK_XPATH = ".//a[starts-with(@href,'#footnote-ref-')]"
+WUXIAWORLD_BADGE_BUTTON_XPATH = (
+    ".//button"
+    "[contains(concat(' ', normalize-space(@class), ' '), ' MuiButtonBase-root ')]"
+    "[contains(concat(' ', normalize-space(@class), ' '), ' MuiTypography-root ')]"
+    "[.//span[contains(concat(' ', normalize-space(@class), ' '), ' MuiBadge-root ')]]"
+    "[.//span[contains(concat(' ', normalize-space(@class), ' '), ' MuiTouchRipple-root ')]]"
+)
 
 @runtime_checkable
 class ResponseLike(Protocol):
@@ -71,8 +78,16 @@ def strip_footnotes_inplace(container: Any) -> None:
         if parent is not None:
             parent.remove(target)
 
+def strip_unwanted_elements_inplace(container: Any) -> None:
+    for node in container.xpath(WUXIAWORLD_BADGE_BUTTON_XPATH):
+        target = getattr(node, "root", node)
+        parent = getattr(target, "getparent", lambda: None)()
+        if parent is not None:
+            parent.remove(target)
+
 def extract_text(container: Any) -> str:
     strip_footnotes_inplace(container)
+    strip_unwanted_elements_inplace(container)
 
     blocks = container.xpath(".//h1|.//h2|.//h3|.//h4|.//p|.//li|.//blockquote|.//pre")
     parts: list[str] = []
