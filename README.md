@@ -21,6 +21,12 @@ python gui/app.py
 - The browser profile lives under `%LOCALAPPDATA%\WebNovelScraper\browser-profile`.
 - Use the `Launch Browser` button or just click `Load`/`Export`; the app will start the browser if needed.
 
+## Preferences
+- The app now stores user preferences in `%LOCALAPPDATA%\WebNovelScraper\preferences.json`.
+- Use `Edit > Preferences` to set a persistent workspace root for the whole app.
+- The `Windows` menu can raise the main window and the Preferences window if they are hidden.
+- Optional per-widget background/text color overrides can be enabled in Preferences. They are off by default.
+
 ## Windows PyInstaller Build
 ```powershell
 .venv\Scripts\python.exe -m pip install -r requirements.txt -r requirements-build.txt
@@ -36,5 +42,5 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1 -Clean
 
 ## Windows Runtime Notes
 - The frozen app stores writable state under `%LOCALAPPDATA%\WebNovelScraper`.
-- Workspaces live under `%LOCALAPPDATA%\WebNovelScraper\workspaces`.
+- Workspaces live under the workspace root configured in Preferences. If no preference is set, the default is `%LOCALAPPDATA%\WebNovelScraper\workspaces`.
 - If you bundle Playwright browsers, keep `playwright-browsers` inside the built distribution.

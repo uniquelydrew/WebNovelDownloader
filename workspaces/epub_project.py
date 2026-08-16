@@ -7,8 +7,11 @@ import shutil
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
+from lxml import html
+
+from models.chapter import Chapter
 from workspaces.manager import _atomic_write_json, _read_json, _utc_iso
 
 
@@ -22,6 +25,7 @@ def _sha256_text(text: str) -> str:
 
 
 _CHAPTER_TITLE_RE = re.compile(r"chapter\s*(\d+)\s*[:\-\u2013\u2014]?\s*(.*)", re.IGNORECASE)
+_TRAILING_COMMENT_COUNT_RE = re.compile(r"(?:\s|\u00a0)?\d+$")
 
 
 def normalize_chapter_title(raw_title: str, volume_chapter_index: int) -> tuple[str, dict[str, Any]]:
@@ -212,6 +216,12 @@ class ChapterRecord:
 class EpubWorkspaceProject:
     """Unpacked EPUB workspace with a workspace.json chapter index."""
 
+    PAYWALL_ARTIFACT_MARKERS = (
+        "Log in to continue your adventure",
+        "Unlock free chapters every day",
+        "Other benefits you will get",
+    )
+
     def __init__(self, workspace_root: Path):
         self.workspace_root = workspace_root.resolve()
         self.workspace_json = self.workspace_root / "workspace.json"
@@ -233,6 +243,54 @@ class EpubWorkspaceProject:
     def _save_ws(self, ws: dict) -> None:
         ws["last_updated"] = _utc_iso()
         _atomic_write_json(self.workspace_json, ws)
+
+    def load_cached_chapter(
+        self,
+        *,
+        series_title: str,
+        volume_index: int,
+        volume_title: str,
+        chapter_index: int,
+        chapter_title: str,
+        url: str,
+        min_chars: int = 500,
+    ) -> Chapter | None:
+        ws = self._load_ws()
+        by_url = ws.get("chapters_by_url") or {}
+        rec_idx = by_url.get(url)
+        if rec_idx is None:
+            return None
+
+        chapters = ws.get("chapters") or []
+        try:
+            rec = chapters[int(rec_idx)]
+        except Exception:
+            return None
+        if not rec.get("downloaded"):
+            return None
+
+        rel_file = str(rec.get("file") or "").strip()
+        if not rel_file:
+            return None
+        abs_file = self.epub_root / rel_file
+        if not abs_file.exists():
+            return None
+
+        text = self._extract_text_from_xhtml(abs_file)
+        if len(text.strip()) < int(min_chars):
+            return None
+        if self._contains_paywall_artifact(text):
+            return None
+
+        return Chapter(
+            novel_title=series_title,
+            volume_index=volume_index,
+            volume_title=volume_title,
+            chapter_index=chapter_index,
+            chapter_title=str(rec.get("chapter_title") or chapter_title or f"Chapter {chapter_index}").strip(),
+            chapter_url=url,
+            text=text,
+        )
 
     def write_chapter(
         self,
@@ -321,6 +379,223 @@ class EpubWorkspaceProject:
             duplicate_of_global=duplicate_of_global,
             issues=[],
         )
+
+    def _extract_text_from_xhtml(self, path: Path) -> str:
+        try:
+            # These chapters are stored as XHTML, so the default namespace must be
+            # handled explicitly or plain "//body//p" XPath queries will miss them.
+            from lxml import etree
+
+            root = etree.fromstring(path.read_bytes())
+        except Exception:
+            return ""
+
+        lines: list[str] = []
+        ns = {"x": "http://www.w3.org/1999/xhtml"}
+
+        try:
+            nodes = root.xpath("//x:body//x:p", namespaces=ns)
+        except Exception:
+            nodes = []
+
+        if not nodes:
+            try:
+                nodes = root.xpath('//*[local-name()="body"]//*[local-name()="p"]')
+            except Exception:
+                nodes = []
+
+        for node in nodes:
+            try:
+                raw_text = "".join(node.itertext())
+            except Exception:
+                raw_text = ""
+            text = " ".join((raw_text or "").split())
+            if text:
+                lines.append(text)
+
+        if not lines:
+            try:
+                body = root.xpath("//x:body", namespaces=ns)
+            except Exception:
+                body = []
+            if not body:
+                try:
+                    body = root.xpath('//*[local-name()="body"]')
+                except Exception:
+                    body = []
+            if body:
+                try:
+                    raw_text = "".join(body[0].itertext())
+                except Exception:
+                    raw_text = ""
+                text = "\n".join(line.strip() for line in raw_text.splitlines() if line.strip())
+                return text
+        return "\n".join(lines)
+
+    def _contains_paywall_artifact(self, text: str) -> bool:
+        body = text or ""
+        return any(marker in body for marker in self.PAYWALL_ARTIFACT_MARKERS)
+
+    def downloaded_chapter_urls(self) -> set[str]:
+        ws = self._load_ws()
+        urls: set[str] = set()
+        for rec in ws.get("chapters") or []:
+            if not rec.get("downloaded"):
+                continue
+            url = str(rec.get("url") or "").strip()
+            rel_file = str(rec.get("file") or "").strip()
+            if url and rel_file and (self.epub_root / rel_file).exists():
+                urls.add(url)
+        return urls
+
+    def repair_comment_metadata(
+        self,
+        *,
+        sample_stride: int = 50,
+        probe_paragraphs: int = 5,
+        on_progress: Callable[[int, int, str], None] | None = None,
+    ) -> dict[str, int]:
+        """Find and repair the recent range containing flattened comment badges."""
+        from lxml import etree
+
+        ws = self._load_ws()
+        chapters = [record for record in (ws.get("chapters") or []) if record.get("downloaded")]
+        chapters.sort(
+            key=lambda record: (
+                int(record.get("global_index")) if record.get("global_index") is not None else -1,
+                int(record.get("volume_index") or 0),
+                int(record.get("volume_chapter_index") or 0),
+            )
+        )
+        sample_stride = max(1, int(sample_stride))
+        probe_paragraphs = max(1, int(probe_paragraphs))
+        sampled = 0
+        start_index = None
+
+        def report(done: int, total: int, message: str) -> None:
+            if on_progress is not None:
+                on_progress(done, total, message)
+
+        def chapter_path(record: dict[str, Any]) -> Path | None:
+            rel_file = str(record.get("file") or "").strip()
+            path = self.epub_root / rel_file if rel_file else None
+            return path if path is not None and path.exists() else None
+
+        def has_metadata(record: dict[str, Any]) -> bool:
+            path = chapter_path(record)
+            if path is None:
+                return False
+            try:
+                root = etree.fromstring(path.read_bytes())
+                paragraphs = root.xpath('//*[local-name()="body"]//*[local-name()="p"]')[:probe_paragraphs]
+            except Exception:
+                return False
+            return any(_TRAILING_COMMENT_COUNT_RE.search("".join(paragraph.itertext())) for paragraph in paragraphs)
+
+        for index in range(len(chapters) - 1, -1, -sample_stride):
+            sampled += 1
+            report(sampled, max(1, (len(chapters) + sample_stride - 1) // sample_stride), "Checking recent chapters for comment metadata...")
+            if has_metadata(chapters[index]):
+                start_index = max(0, index - sample_stride)
+                break
+
+        if start_index is None:
+            report(1, 1, "No comment metadata found in sampled chapters.")
+            return {"sampled": sampled, "scanned": 0, "chapters": 0, "paragraphs": 0}
+
+        repaired_chapters = 0
+        repaired_paragraphs = 0
+        scanned = 0
+        repair_candidates = chapters[start_index:]
+        for repair_index, rec in enumerate(repair_candidates, start=1):
+            path = chapter_path(rec)
+            if path is None:
+                continue
+            try:
+                root = etree.fromstring(path.read_bytes())
+                paragraphs = root.xpath('//*[local-name()="body"]//*[local-name()="p"]')
+            except Exception:
+                continue
+            scanned += 1
+
+            changed = False
+            for paragraph in paragraphs:
+                raw = "".join(paragraph.itertext())
+                cleaned = _TRAILING_COMMENT_COUNT_RE.sub("", raw).rstrip()
+                if not cleaned or cleaned == raw:
+                    continue
+                for child in list(paragraph):
+                    paragraph.remove(child)
+                paragraph.text = cleaned
+                changed = True
+                repaired_paragraphs += 1
+
+            if changed:
+                path.write_bytes(etree.tostring(root, encoding="utf-8", xml_declaration=True, doctype="<!DOCTYPE html>"))
+                rec["sha256"] = _sha256_text(self._extract_text_from_xhtml(path))
+                repaired_chapters += 1
+            report(repair_index, len(repair_candidates), f"Checking comment metadata: {repair_index}/{len(repair_candidates)} chapter(s)")
+
+        if repaired_chapters:
+            self._save_ws(ws)
+        return {"sampled": sampled, "scanned": scanned, "chapters": repaired_chapters, "paragraphs": repaired_paragraphs}
+
+    def scan_downloaded_chapters(
+        self,
+        *,
+        min_chars: int = 500,
+        on_progress: Callable[[int, int, str], None] | None = None,
+    ) -> dict[str, Any]:
+        ws = self._load_ws()
+        chapters = list(ws.get("chapters") or [])
+        issues: list[dict[str, Any]] = []
+        scanned = 0
+
+        downloaded_total = sum(1 for rec in chapters if rec.get("downloaded"))
+        for rec in chapters:
+            if not rec.get("downloaded"):
+                continue
+            scanned += 1
+            if on_progress is not None:
+                on_progress(scanned, max(1, downloaded_total), f"Checking downloads: {scanned}/{downloaded_total} chapter(s)")
+            rel_file = str(rec.get("file") or "").strip()
+            abs_file = self.epub_root / rel_file if rel_file else None
+            title = str(rec.get("chapter_title") or rec.get("chapter_title_raw") or "Untitled Chapter").strip()
+            url = str(rec.get("url") or "").strip()
+
+            if abs_file is None or not abs_file.exists():
+                issues.append({"type": "missing_file", "title": title, "url": url, "file": rel_file})
+                continue
+
+            text = self._extract_text_from_xhtml(abs_file)
+            char_count = len(text.strip())
+            if char_count < int(min_chars):
+                issues.append(
+                    {
+                        "type": "too_short",
+                        "title": title,
+                        "url": url,
+                        "file": rel_file,
+                        "chars": char_count,
+                    }
+                )
+
+            if self._contains_paywall_artifact(text):
+                issues.append(
+                    {
+                        "type": "paywall_artifact",
+                        "title": title,
+                        "url": url,
+                        "file": rel_file,
+                    }
+                )
+
+        return {
+            "scanned": scanned,
+            "issues": issues,
+            "issue_count": len(issues),
+            "ok": len(issues) == 0,
+        }
 
     def finalize_and_repair(
         self,

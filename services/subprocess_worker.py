@@ -16,11 +16,13 @@ class SubprocessCrawlWorker(QThread):
     log = Signal(str)
     finished = Signal(bool, str)
 
-    def __init__(self, selection_payload: dict, out_dir: str, fmt: str):
+    def __init__(self, selection_payload: dict, out_dir: str, fmt: str, *, download_only: bool = False):
         super().__init__()
         self.selection_payload = selection_payload
         self.out_dir = out_dir
         self.fmt = fmt
+        self.download_only = download_only
+        self.download_tabs = max(1, min(4, int(selection_payload.get("download_tabs") or 1)))
 
     def run(self):
         selection_path: str | None = None
@@ -42,7 +44,11 @@ class SubprocessCrawlWorker(QThread):
                 self.out_dir,
                 "--format",
                 self.fmt,
+                "--download-tabs",
+                str(self.download_tabs),
             ]
+            if self.download_only:
+                cmd.append("--download-only")
 
             proc = subprocess.Popen(
                 cmd,

@@ -8,7 +8,6 @@ WUXIAWORLD_BADGE_BUTTON_XPATH = (
     "[contains(concat(' ', normalize-space(@class), ' '), ' MuiButtonBase-root ')]"
     "[contains(concat(' ', normalize-space(@class), ' '), ' MuiTypography-root ')]"
     "[.//span[contains(concat(' ', normalize-space(@class), ' '), ' MuiBadge-root ')]]"
-    "[.//span[contains(concat(' ', normalize-space(@class), ' '), ' MuiTouchRipple-root ')]]"
 )
 
 @runtime_checkable

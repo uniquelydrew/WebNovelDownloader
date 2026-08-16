@@ -26,14 +26,25 @@ class PlaywrightDiscoveryService:
         self.cache_root = cache_root() / "traversal"
         self.cache_root.mkdir(parents=True, exist_ok=True)
         self.cache_ttl_seconds = int(os.getenv("WNS_TRAVERSAL_CACHE_TTL", 60 * 60 * 24))
+        self._collected_in_oldest_order = False
 
-    def load(self, url: str) -> dict:
+    def load(
+        self,
+        url: str,
+        *,
+        latest_only: bool = False,
+        known_chapter_urls: list[str] | None = None,
+        known_volume_titles: list[str] | None = None,
+    ) -> dict:
+        self._collected_in_oldest_order = False
         force_refresh = os.getenv("WNS_TRAVERSAL_FORCE_REFRESH") == "1"
         cache_disabled = os.getenv("WNS_TRAVERSAL_CACHE_DISABLE") == "1"
+        known_chapter_urls = list(known_chapter_urls or [])
+        known_volume_titles = list(known_volume_titles or [])
 
         cache_key = hashlib.sha256(url.encode("utf-8")).hexdigest()
         cache_path = self.cache_root / f"{cache_key}.json"
-        if not cache_disabled and not force_refresh and cache_path.exists():
+        if not latest_only and not cache_disabled and not force_refresh and cache_path.exists():
             age = time.time() - cache_path.stat().st_mtime
             if age < self.cache_ttl_seconds:
                 return json.loads(cache_path.read_text(encoding="utf-8"))
@@ -79,18 +90,30 @@ class PlaywrightDiscoveryService:
             try:
                 page.goto(url, timeout=60000)
                 page.wait_for_load_state("domcontentloaded", timeout=60000)
-                self._ensure_oldest_first(page)
+                self._ensure_chapters_tab(page)
+                if not latest_only:
+                    self._collected_in_oldest_order = self._ensure_oldest_first(page)
 
-                try:
-                    ws = WorkspaceManager(series_url=url, series_title=None)
-                except Exception as e:
-                    ws = None
-                    self.logger.log("discovery", "workspace_init_failed", {"error": f"{type(e).__name__}: {e}"})
+                if not latest_only:
+                    try:
+                        ws = WorkspaceManager(series_url=url, series_title=None)
+                    except Exception as e:
+                        ws = None
+                        self.logger.log("discovery", "workspace_init_failed", {"error": f"{type(e).__name__}: {e}"})
 
                 self._dump_page(run_dir, page, phase="after_goto")
                 time.sleep(2.0)
                 self._dump_page(run_dir, page, phase="after_hydration_wait")
-                payload = self._extract_payload(page, url, run_dir=run_dir, workspace=ws)
+                if latest_only:
+                    payload = self._extract_latest_payload(
+                        page,
+                        url,
+                        run_dir=run_dir,
+                        known_chapter_urls=known_chapter_urls,
+                        known_volume_titles=known_volume_titles,
+                    )
+                else:
+                    payload = self._extract_payload(page, url, run_dir=run_dir, workspace=ws)
 
                 if ws is not None:
                     try:
@@ -100,7 +123,8 @@ class PlaywrightDiscoveryService:
                         pass
 
                 self._persist_payload_snapshot(payload)
-                cache_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                if not latest_only:
+                    cache_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
                 (run_dir / "payload.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
                 self.logger.log(
                     "discovery",
@@ -131,29 +155,115 @@ class PlaywrightDiscoveryService:
                 except Exception:
                     pass
 
-    def _ensure_oldest_first(self, page) -> None:
-        selectors = [
-            "button:has-text('Oldest')",
-            "[role='button']:has-text('Oldest')",
-            "button:has-text('Ascending')",
-            "[role='button']:has-text('Ascending')",
-            "button[aria-label*='oldest' i]",
-            "[role='button'][aria-label*='oldest' i]",
-        ]
-        for selector in selectors:
-            try:
-                loc = page.locator(selector)
-                if loc.count() <= 0:
-                    continue
-                target = loc.first
-                target.scroll_into_view_if_needed(timeout=3000)
-                target.click(timeout=5000)
-                time.sleep(0.75)
-                self.logger.log("discovery", "sort_order_set", {"selector": selector})
-                return
-            except Exception:
-                continue
+    def _ensure_oldest_first(self, page) -> bool:
+        toolbar = page.locator("div.flex.flex-1.items-end.justify-end").first
+        newest_button = toolbar.locator("button").filter(has_text="Newest").first
+        oldest_button = toolbar.locator("button").filter(has_text="Oldest").first
+        chapter_links = page.locator("a[href*='-chapter-'], a[href*='/chapter/']")
+
+        try:
+            oldest_count = oldest_button.count()
+            newest_count = newest_button.count()
+            if oldest_count > 0 and newest_count == 0:
+                self.logger.log("discovery", "sort_order_set", {"selector": "button:has-text('Oldest')", "changed": False})
+                return True
+        except Exception:
+            pass
+
+        try:
+            if newest_button.count() > 0:
+                before_href = None
+                try:
+                    if chapter_links.count() > 0:
+                        before_href = chapter_links.first.get_attribute("href")
+                except Exception:
+                    pass
+
+                newest_button.scroll_into_view_if_needed(timeout=3000)
+                newest_button.click(timeout=5000)
+
+                oldest_option = page.locator(
+                    "div.absolute.top-\\[calc\\(100\\%\\+8px\\)\\].right-0.z-10.w-\\[160px\\] div"
+                ).filter(has_text="Oldest").first
+                oldest_option.wait_for(state="visible", timeout=5000)
+                oldest_option.click(timeout=5000)
+
+                changed = False
+                try:
+                    page.wait_for_function(
+                        """
+                        () => {
+                            const buttons = Array.from(document.querySelectorAll('button'));
+                            return buttons.some((button) => (button.textContent || '').includes('Oldest'));
+                        }
+                        """,
+                        timeout=5000,
+                    )
+                    changed = True
+                except Exception:
+                    if before_href:
+                        try:
+                            page.wait_for_function(
+                                """
+                                (previousHref) => {
+                                    const firstLink = document.querySelector("a[href*='/chapter/']");
+                                    return !!firstLink && firstLink.getAttribute('href') !== previousHref;
+                                }
+                                """,
+                                arg=before_href,
+                                timeout=5000,
+                            )
+                            changed = True
+                        except Exception:
+                            pass
+
+                page.wait_for_timeout(750)
+
+                self.logger.log(
+                    "discovery",
+                    "sort_order_set",
+                    {
+                        "selector": "button:has-text('Newest') -> div:has-text('Oldest')",
+                        "changed": changed,
+                    },
+                )
+                if changed:
+                    return True
+        except Exception as e:
+            self.logger.log("discovery", "sort_order_click_failed", {"error": f"{type(e).__name__}: {e}"})
+
         self.logger.log("discovery", "sort_order_set", {"selector": None, "fallback": "reverse_collected_order"})
+        return False
+
+    def _ensure_chapters_tab(self, page) -> None:
+        try:
+            selected_tab = page.locator("button[role='tab'][aria-selected='true']").first
+            if selected_tab.count() > 0:
+                selected_text = (selected_tab.text_content() or "").strip().lower()
+                if "chapters" in selected_text:
+                    self.logger.log("discovery", "chapters_tab", {"changed": False})
+                    return
+        except Exception:
+            pass
+
+        try:
+            chapters_tab = page.locator("button[role='tab']").filter(has_text="Chapters").first
+            chapters_tab.wait_for(state="visible", timeout=10000)
+            chapters_tab.scroll_into_view_if_needed(timeout=3000)
+            chapters_tab.click(timeout=5000)
+            page.wait_for_function(
+                """
+                () => {
+                    const selected = document.querySelector("button[role='tab'][aria-selected='true']");
+                    return !!selected && (selected.textContent || '').includes('Chapters');
+                }
+                """,
+                timeout=10000,
+            )
+            page.wait_for_timeout(750)
+            self.logger.log("discovery", "chapters_tab", {"changed": True})
+        except Exception as e:
+            self.logger.log("discovery", "chapters_tab_failed", {"error": f"{type(e).__name__}: {e}"})
 
     def _extract_payload(self, page, url: str, run_dir, workspace: WorkspaceManager | None) -> dict:
         series_title = (page.title() or "").strip() or "Unknown Series"
@@ -182,9 +292,18 @@ class PlaywrightDiscoveryService:
         if accordion_count > 0:
             for i in range(accordion_count):
                 accordion = accordions.nth(i)
-                summary = accordion.locator("[role='button']")
+                # Wuxiaworld currently renders AccordionSummary as a native button
+                # without role="button".  Keep the role selector for older markup.
+                summary = accordion.locator("button.MuiAccordionSummary-root, [role='button']")
                 title_el = summary.locator("span.font-set-sb18")
-                title = (title_el.inner_text() or "").strip() or f"Volume {i + 1}"
+                title = f"Volume {i + 1}"
+                try:
+                    if title_el.count() > 0:
+                        title = (title_el.text_content() or "").strip() or title
+                    elif summary.count() > 0:
+                        title = (summary.text_content() or "").strip() or title
+                except Exception:
+                    pass
                 try:
                     expanded = summary.get_attribute("aria-expanded")
                 except Exception:
@@ -201,18 +320,7 @@ class PlaywrightDiscoveryService:
                     time.sleep(0.6)
 
                 details = accordion.locator(".MuiAccordionDetails-root")
-                try:
-                    page.wait_for_function(
-                        """
-                        (el) => {
-                            if (!el) return false;
-                            return el.querySelectorAll("a.group").length > 0;
-                        }
-                        """,
-                        arg=details,
-                        timeout=15000,
-                    )
-                except Exception:
+                if not self._wait_for_volume_chapters(details):
                     self.logger.log("discovery", "volume_wait_timeout", {"index": i, "title": title, "debug_run_dir": str(run_dir)})
 
                 chapters = self._normalize_chapter_order(self._collect_chapters_from_details(details, base=base))
@@ -245,31 +353,104 @@ class PlaywrightDiscoveryService:
 
         return {"debug_run_dir": str(run_dir), "series_title": series_title, "series_url": url, "volumes": volumes}
 
+    def _extract_latest_payload(self, page, url: str, run_dir, known_chapter_urls: list[str], known_volume_titles: list[str]) -> dict:
+        """Collect only the newest volume frontier until a known chapter is reached."""
+        series_title = (page.title() or "").strip() or "Unknown Series"
+        parsed = urlparse(url)
+        base = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else "https://www.wuxiaworld.com"
+        known_urls = set(known_chapter_urls)
+        volumes: list[dict] = []
+        accordions = page.locator(".MuiAccordion-root")
+        # Labels can change while Wuxiaworld hydrates the chapter tab, and one
+        # logical volume can be split across adjacent accordions.  Use chapter
+        # URL overlap as the frontier signal instead of the displayed title.
+        indices = range(min(4, accordions.count()))
+        known_blocks = 0
+
+        for i in indices:
+            accordion = accordions.nth(i)
+            summary = accordion.locator("button.MuiAccordionSummary-root, [role='button']")
+            title_el = summary.locator("span.font-set-sb18")
+            title = f"Volume {i + 1}"
+            try:
+                if title_el.count() > 0:
+                    title = (title_el.text_content() or "").strip() or title
+                elif summary.count() > 0:
+                    title = (summary.text_content() or "").strip() or title
+            except Exception:
+                pass
+
+            try:
+                if summary.get_attribute("aria-expanded") != "true":
+                    summary.scroll_into_view_if_needed(timeout=5000)
+                    summary.click(timeout=5000)
+            except Exception:
+                pass
+
+            details = accordion.locator(".MuiAccordionDetails-root")
+            if not self._wait_for_volume_chapters(details):
+                self.logger.log("discovery", "latest_volume_wait_timeout", {"index": i, "title": title})
+
+            chapters = self._normalize_chapter_order(self._collect_chapters_from_details(details, base=base))
+            if not chapters:
+                continue
+            volumes.append({"title": title, "chapters": chapters})
+
+            has_known_chapter = any(chapter["url"] in known_urls for chapter in chapters)
+            if has_known_chapter:
+                known_blocks += 1
+            self.logger.log(
+                "discovery",
+                "latest_volume_collected",
+                {"index": i, "title": title, "chapter_count": len(chapters), "known_blocks": known_blocks, "has_known_chapter": has_known_chapter},
+            )
+            if known_blocks >= 2:
+                break
+
+        return {
+            "debug_run_dir": str(run_dir),
+            "series_title": series_title,
+            "series_url": url,
+            "volumes": volumes,
+            "latest_only": True,
+        }
+
     def _normalize_chapter_order(self, chapters: list[dict]) -> list[dict]:
         if len(chapters) <= 1:
             return chapters
+        if self._collected_in_oldest_order:
+            return chapters
         return list(reversed(chapters))
+
+    @staticmethod
+    def _wait_for_volume_chapters(details) -> bool:
+        try:
+            details.locator("a.group").first.wait_for(state="attached", timeout=15000)
+            return True
+        except Exception:
+            return False
 
     def _collect_chapters_from_details(self, details, base: str) -> list[dict]:
         anchors = details.locator("a.group")
         items: list[dict] = []
         seen = set()
-        for i in range(anchors.count()):
-            a = anchors.nth(i)
-            href = a.get_attribute("href") or ""
+        try:
+            records = anchors.evaluate_all(
+                """
+                (anchors) => anchors.map((anchor) => ({
+                    href: anchor.getAttribute('href') || '',
+                    title: (anchor.querySelector('span')?.textContent || anchor.textContent || '').trim(),
+                }))
+                """
+            )
+        except Exception:
+            records = []
+        for record in records:
+            href = str(record.get("href") or "")
             if not href:
                 continue
             abs_href = urljoin(base, href)
-            title_span = a.locator("span").first
-            try:
-                title = " ".join(((title_span.text_content() or "").strip()).split())
-            except Exception:
-                title = ""
-            if not title:
-                try:
-                    title = " ".join(((a.text_content() or "").strip()).split())
-                except Exception:
-                    title = abs_href
+            title = " ".join(str(record.get("title") or "").split()) or abs_href
             if abs_href in seen:
                 continue
             seen.add(abs_href)

@@ -26,3 +26,19 @@ class ExportController:
         self.worker.log.connect(on_log)
         self.worker.finished.connect(on_finished)
         self.worker.start()
+
+    def start_download(
+        self,
+        payload: dict,
+        *,
+        on_progress: Callable[[int, int, str], None],
+        on_status: Callable[[str], None],
+        on_log: Callable[[str], None],
+        on_finished: Callable[[bool, str], None],
+    ) -> None:
+        self.worker = SubprocessCrawlWorker(payload, "", "epub", download_only=True)
+        self.worker.progress.connect(on_progress)
+        self.worker.status.connect(on_status)
+        self.worker.log.connect(on_log)
+        self.worker.finished.connect(on_finished)
+        self.worker.start()

@@ -50,6 +50,10 @@ def auth_root() -> Path:
     return ensure_dir(writable_root() / "auth")
 
 
+def preferences_path() -> Path:
+    return ensure_dir(app_data_root()) / "preferences.json"
+
+
 def auth_storage_path() -> Path:
     return auth_root() / "storage_state.json"
 
@@ -74,7 +78,9 @@ def configure_playwright_env() -> Path | None:
 def build_crawl_command() -> list[str]:
     if is_frozen():
         return [sys.executable, "--run-crawl"]
-    return [sys.executable, str(source_root() / "cli" / "run_crawl.py")]
+    # Run through the package entry point so source-mode subprocesses retain
+    # the project import path (running cli/run_crawl.py directly does not).
+    return [sys.executable, "-m", "gui.app", "--run-crawl"]
 
 
 def runtime_cwd() -> Path:

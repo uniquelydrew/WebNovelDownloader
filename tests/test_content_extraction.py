@@ -20,7 +20,6 @@ class ContentExtractionTests(unittest.TestCase):
                 <span class="MuiBadge-root ww-1rzb3uu">
                   <span class="MuiBadge-badge h-16 text-[0.6rem] text-gray-100 MuiBadge-standard MuiBadge-anchorOriginTopRight MuiBadge-anchorOriginTopRightRectangular MuiBadge-overlapRectangular MuiBadge-colorSecondary bg-gray-400 dark:bg-gray-800 hover:bg-blue-300 ww-tzai6c">0</span>
                 </span>
-                <span class="MuiTouchRipple-root ww-w0pj6f"></span>
               </button>
               <p>Second paragraph.</p>
             </div>

@@ -3,6 +3,8 @@
 import json
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
+from queue import Empty, Queue
 from typing import Iterable, Iterator
 
 from lxml import html
@@ -34,7 +36,7 @@ class PlaywrightChapterCrawler:
         "Other benefits you will get",
     )
 
-    def __init__(self):
+    def __init__(self, *, download_tabs: int = 1, force_new_page: bool = False):
         configure_playwright_env()
         self.log_root = log_root()
         self.logger = LineRotatingJSONLogger(str(self.log_root / "chapter_fetch.log"))
@@ -43,6 +45,8 @@ class PlaywrightChapterCrawler:
         self._context = None
         self._page = None
         self._owns_page = False
+        self.download_tabs = max(1, min(4, int(download_tabs)))
+        self.force_new_page = force_new_page
 
     def _ensure(self) -> None:
         if self._page is not None:
@@ -70,7 +74,7 @@ class PlaywrightChapterCrawler:
             raise RuntimeError("No browser contexts available on CDP connection.")
 
         self._context = self._browser.contexts[0]
-        if getattr(self._context, "pages", None) and self._context.pages:
+        if not self.force_new_page and getattr(self._context, "pages", None) and self._context.pages:
             self._page = self._context.pages[0]
             self._owns_page = False
             self.logger.log("chapter_fetch", "page_reuse", {"existing_pages": len(self._context.pages)})
@@ -99,6 +103,12 @@ class PlaywrightChapterCrawler:
             self._pw = None
 
     def fetch_chapters(self, items: Iterable[dict], cleaner: Cleaner) -> Iterator[Chapter]:
+        planned = list(items)
+        planned.sort(key=lambda it: (int(it.get("volume_index") or 0), int(it.get("chapter_index") or 0)))
+        if self.download_tabs > 1 and len(planned) > 1:
+            yield from self._fetch_chapters_parallel(planned, cleaner)
+            return
+
         self._ensure()
         nav_mode = (os.getenv("WNS_NAV_MODE") or "pager").strip().lower()
         if nav_mode not in ("pager", "goto"):
@@ -106,8 +116,6 @@ class PlaywrightChapterCrawler:
 
         max_errors = int(os.getenv("WNS_MAX_CHAPTER_ERRORS", "5"))
         error_count = 0
-        planned = list(items)
-        planned.sort(key=lambda it: (int(it.get("volume_index") or 0), int(it.get("chapter_index") or 0)))
         prev = None
 
         for item in planned:
@@ -175,6 +183,50 @@ class PlaywrightChapterCrawler:
                 if error_count >= max_errors:
                     self.logger.log("chapter_fetch", "abort_threshold", {"errors": error_count, "max_errors": max_errors})
                     break
+
+    def _fetch_chapters_parallel(self, planned: list[dict], cleaner: Cleaner) -> Iterator[Chapter]:
+        """Use a bounded pool of managed-Chrome tabs for independent chapter URLs."""
+        tab_count = min(self.download_tabs, len(planned))
+        self.logger.log("chapter_fetch", "parallel_tabs_start", {"tabs": tab_count, "chapters": len(planned)})
+        jobs: Queue[dict] = Queue()
+        results: Queue[object] = Queue()
+        worker_done = object()
+        for item in planned:
+            jobs.put(item)
+
+        def run_tab() -> None:
+            tab_crawler = PlaywrightChapterCrawler(download_tabs=1, force_new_page=True)
+            try:
+                while True:
+                    try:
+                        item = jobs.get_nowait()
+                    except Empty:
+                        break
+                    try:
+                        chapter = next(tab_crawler.fetch_chapters([item], cleaner), None)
+                        if chapter is not None:
+                            results.put(chapter)
+                    except Exception as exc:
+                        self.logger.log("chapter_fetch", "parallel_worker_error", {"error": f"{type(exc).__name__}: {exc}"})
+                    finally:
+                        jobs.task_done()
+            finally:
+                tab_crawler.close()
+                results.put(worker_done)
+
+        with ThreadPoolExecutor(max_workers=tab_count, thread_name_prefix="chapter-tab") as executor:
+            futures = [executor.submit(run_tab) for _ in range(tab_count)]
+            completed_workers = 0
+            while completed_workers < tab_count:
+                result = results.get()
+                if result is worker_done:
+                    # Each worker posts a final sentinel once its tab has been closed.
+                    completed_workers += 1
+                    continue
+                yield result  # type: ignore[misc]
+            for future in futures:
+                future.result()
+        self.logger.log("chapter_fetch", "parallel_tabs_complete", {"tabs": tab_count, "chapters": len(planned)})
 
     def _goto(self, url: str) -> None:
         self.logger.log("chapter_fetch", "goto", {"url": url})

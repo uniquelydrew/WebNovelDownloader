@@ -6,7 +6,14 @@ import sys
 from typing import Any
 
 
-def discovery_entry(url: str, conn, force_refresh: bool = False) -> None:
+def discovery_entry(
+    url: str,
+    conn,
+    force_refresh: bool = False,
+    latest_only: bool = False,
+    known_chapter_urls: list[str] | None = None,
+    known_volume_titles: list[str] | None = None,
+) -> None:
     try:
         if sys.platform.startswith("win"):
             asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
@@ -17,7 +24,12 @@ def discovery_entry(url: str, conn, force_refresh: bool = False) -> None:
         if force_refresh:
             import os
             os.environ["WNS_TRAVERSAL_FORCE_REFRESH"] = "1"
-        payload = service.load(url)
+        payload = service.load(
+            url,
+            latest_only=latest_only,
+            known_chapter_urls=known_chapter_urls,
+            known_volume_titles=known_volume_titles,
+        )
         conn.send({"ok": True, "payload": payload})
     except Exception as e:
         try:
@@ -32,13 +44,24 @@ def discovery_entry(url: str, conn, force_refresh: bool = False) -> None:
 
 
 class DiscoveryProcess:
-    def __init__(self, url: str, *, force_refresh: bool = False):
+    def __init__(
+        self,
+        url: str,
+        *,
+        force_refresh: bool = False,
+        latest_only: bool = False,
+        known_chapter_urls: list[str] | None = None,
+        known_volume_titles: list[str] | None = None,
+    ):
         self.url = url
         self.force_refresh = force_refresh
+        self.latest_only = latest_only
+        self.known_chapter_urls = list(known_chapter_urls or [])
+        self.known_volume_titles = list(known_volume_titles or [])
         self.parent_conn, self.child_conn = mp.Pipe(duplex=False)
         self.process = mp.Process(
             target=discovery_entry,
-            args=(self.url, self.child_conn, self.force_refresh),
+            args=(self.url, self.child_conn, self.force_refresh, self.latest_only, self.known_chapter_urls, self.known_volume_titles),
             daemon=True,
         )
 

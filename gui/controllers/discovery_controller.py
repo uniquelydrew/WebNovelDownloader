@@ -13,9 +13,24 @@ class DiscoveryController(QObject):
         self.discovery_proc: DiscoveryProcess | None = None
         self.discovery_timer: QTimer | None = None
 
-    def start(self, url: str, on_result: Callable[[dict], None], *, force_refresh: bool = False) -> None:
+    def start(
+        self,
+        url: str,
+        on_result: Callable[[dict], None],
+        *,
+        force_refresh: bool = False,
+        latest_only: bool = False,
+        known_chapter_urls: list[str] | None = None,
+        known_volume_titles: list[str] | None = None,
+    ) -> None:
         self.cancel()
-        self.discovery_proc = DiscoveryProcess(url, force_refresh=force_refresh)
+        self.discovery_proc = DiscoveryProcess(
+            url,
+            force_refresh=force_refresh,
+            latest_only=latest_only,
+            known_chapter_urls=known_chapter_urls,
+            known_volume_titles=known_volume_titles,
+        )
         self.discovery_proc.start()
         self.discovery_timer = QTimer(self)
         self.discovery_timer.timeout.connect(lambda: self._poll(on_result))

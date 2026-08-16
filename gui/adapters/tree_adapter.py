@@ -11,13 +11,14 @@ class TreeAdapter:
     def clear(self) -> None:
         self.tree.clear()
 
-    def populate_from_payload(self, payload: dict) -> None:
+    def populate_from_payload(self, payload: dict, downloaded_urls: set[str] | None = None) -> None:
         self.tree.blockSignals(True)
         self.tree.clear()
+        downloaded_urls = downloaded_urls or set()
 
         series_title = payload.get("series_title") or "Unknown Series"
 
-        root = QTreeWidgetItem([series_title])
+        root = QTreeWidgetItem([series_title, ""])
         root.setFlags(root.flags() | Qt.ItemIsUserCheckable)
         root.setCheckState(0, Qt.Unchecked)
         root.setData(0, Qt.UserRole, {"type": "series"})
@@ -27,7 +28,7 @@ class TreeAdapter:
         for vi, vol in enumerate(volumes, start=1):
             vtitle = (vol.get("title") or f"Volume {vi}").strip()
 
-            vitem = QTreeWidgetItem([vtitle])
+            vitem = QTreeWidgetItem([vtitle, ""])
             vitem.setFlags(vitem.flags() | Qt.ItemIsUserCheckable)
             vitem.setCheckState(0, Qt.Unchecked)
             vitem.setData(0, Qt.UserRole, {"type": "volume", "volume_index": vi, "volume_title": vtitle})
@@ -38,7 +39,8 @@ class TreeAdapter:
                 ctitle = (ch.get("title") or f"Chapter {ci}").strip()
                 curl = (ch.get("url") or "").strip()
 
-                citem = QTreeWidgetItem([ctitle])
+                downloaded = curl in downloaded_urls
+                citem = QTreeWidgetItem([ctitle, "Downloaded" if downloaded else "Not downloaded"])
                 citem.setFlags(citem.flags() | Qt.ItemIsUserCheckable)
                 citem.setCheckState(0, Qt.Unchecked)
                 citem.setData(

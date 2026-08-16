@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlparse
 
+from utils.preferences import PreferencesService
+
 
 class WorkspaceError(Exception):
     """Raised when workspace initialization or persistence fails."""
@@ -51,6 +53,13 @@ def get_default_workspace_root() -> Path:
     override = os.getenv("WNS_WORKSPACE_ROOT")
     if override:
         return Path(override).expanduser().resolve()
+
+    try:
+        prefs = PreferencesService().load()
+        if prefs.workspace_root:
+            return Path(prefs.workspace_root).expanduser().resolve()
+    except Exception:
+        pass
 
     local_appdata = os.getenv("LOCALAPPDATA")
     if local_appdata:
@@ -220,6 +229,92 @@ class WorkspaceManager:
 
         merged["volumes"] = out_vols
         return merged
+
+    def merge_latest_payload(self, old: dict, latest: dict) -> tuple[dict, int]:
+        """Merge the newest discovered frontier without rewriting older volumes."""
+        if not isinstance(old, dict) or not isinstance(latest, dict):
+            raise WorkspaceError("Latest update requires valid workspace payloads.")
+
+        old_volumes: list[dict] = []
+        title_positions: dict[str, int] = {}
+        for volume in (old.get("volumes") or []):
+            if not isinstance(volume, dict):
+                continue
+            copied = dict(volume)
+            title = str(copied.get("title") or "Untitled Volume")
+            if title not in title_positions:
+                title_positions[title] = len(old_volumes)
+                old_volumes.append(copied)
+                continue
+            existing = old_volumes[title_positions[title]]
+            existing_urls = {str(chapter.get("url") or "") for chapter in (existing.get("chapters") or []) if isinstance(chapter, dict)}
+            existing["chapters"] = list(existing.get("chapters") or []) + [
+                dict(chapter)
+                for chapter in (copied.get("chapters") or [])
+                if isinstance(chapter, dict) and str(chapter.get("url") or "") not in existing_urls
+            ]
+        by_title = {str(volume.get("title") or ""): volume for volume in old_volumes}
+        known_urls = {
+            str(chapter.get("url") or "")
+            for volume in old_volumes
+            for chapter in (volume.get("chapters") or [])
+            if isinstance(chapter, dict)
+        }
+        added = 0
+        refreshed_titles: set[str] = set()
+        refreshed_volumes: list[dict] = []
+
+        for incoming in latest.get("volumes") or []:
+            if not isinstance(incoming, dict):
+                continue
+            title = str(incoming.get("title") or "Untitled Volume")
+            incoming_chapters = [dict(chapter) for chapter in (incoming.get("chapters") or []) if isinstance(chapter, dict)]
+            added += sum(1 for chapter in incoming_chapters if str(chapter.get("url") or "") not in known_urls)
+            incoming_urls = {str(chapter.get("url") or "") for chapter in incoming_chapters}
+            existing = by_title.get(title)
+            if incoming_urls:
+                # Wuxiaworld occasionally relabels a volume.  Shared chapter URLs
+                # are a stronger identity signal than the display title.
+                overlapping_volume = max(
+                    old_volumes,
+                    key=lambda volume: len(
+                        incoming_urls
+                        & {
+                            str(chapter.get("url") or "")
+                            for chapter in (volume.get("chapters") or [])
+                            if isinstance(chapter, dict)
+                        }
+                    ),
+                    default=None,
+                )
+                if overlapping_volume is not None:
+                    overlap = incoming_urls & {
+                        str(chapter.get("url") or "")
+                        for chapter in (overlapping_volume.get("chapters") or [])
+                        if isinstance(chapter, dict)
+                    }
+                    if overlap:
+                        existing = overlapping_volume
+            if existing is None:
+                refreshed_volumes.append({"title": title, "chapters": incoming_chapters})
+                refreshed_titles.add(title)
+                continue
+
+            retained = [
+                dict(chapter)
+                for chapter in (existing.get("chapters") or [])
+                if isinstance(chapter, dict) and str(chapter.get("url") or "") not in incoming_urls
+            ]
+            existing_title = str(existing.get("title") or title)
+            refreshed_volumes.append({**existing, "chapters": incoming_chapters + retained})
+            refreshed_titles.add(existing_title)
+
+        refreshed_volumes.extend(volume for volume in old_volumes if str(volume.get("title") or "") not in refreshed_titles)
+        merged = dict(old)
+        merged["series_title"] = latest.get("series_title") or old.get("series_title")
+        merged["series_url"] = latest.get("series_url") or old.get("series_url")
+        merged["volumes"] = refreshed_volumes
+        return merged, added
 
     def update_selection(
             self,
