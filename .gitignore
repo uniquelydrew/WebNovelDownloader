@@ -14,5 +14,9 @@
 /.playwright-browsers/
 /build/
 /dist/
+/build-*/
+/dist-*/
+/.idea/workspace.xml
+/.idea/misc.xml
 **/__pycache__/
 *.pyc
