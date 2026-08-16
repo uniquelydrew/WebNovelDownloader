@@ -84,4 +84,3 @@ class PreferencesService:
                 setattr(prefs, key, value)
         self.save(prefs)
         return prefs
-

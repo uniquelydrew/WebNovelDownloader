@@ -189,4 +189,3 @@ class PreferencesDialog(QDialog):
         if not color.isValid():
             raise ValueError(f"Invalid color value: {value}")
         return color.name()
-
